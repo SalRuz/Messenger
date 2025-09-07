@@ -31,6 +31,7 @@
             width: 100%;
             height: 100%;
             transform-style: preserve-3d;
+            transition: transform 0.1s ease;
         }
         
         .wall {
@@ -50,48 +51,29 @@
             background-size: 50px 50px;
         }
         
-        #controls {
+        #joystick {
             position: fixed;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            z-index: 100;
-        }
-        
-        #up-btn, #down-btn, #left-btn, #right-btn {
+            bottom: 100px;
+            left: 50px;
+            width: 120px;
+            height: 120px;
             background: rgba(255, 255, 255, 0.2);
-            border: 2px solid rgba(255, 255, 255, 0.5);
-            color: white;
-            width: 60px;
-            height: 60px;
             border-radius: 50%;
-            font-size: 24px;
+            border: 2px solid rgba(255, 255, 255, 0.5);
             display: flex;
             align-items: center;
             justify-content: center;
-            margin: 5px;
+            z-index: 100;
             backdrop-filter: blur(5px);
             -webkit-backdrop-filter: blur(5px);
-            cursor: pointer;
-            user-select: none;
-            transition: all 0.2s;
         }
         
-        #up-btn:active, #down-btn:active, #left-btn:active, #right-btn:active {
-            background: rgba(255, 255, 255, 0.4);
-            transform: scale(0.95);
-        }
-        
-        #up-btn {
-            margin-bottom: 10px;
-        }
-        
-        .row {
-            display: flex;
-            justify-content: center;
+        #joystick-knob {
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 50%;
+            touch-action: none;
         }
         
         #status {
@@ -135,12 +117,16 @@
             margin-top: 20px;
         }
         
-        @media (max-width: 768px) {
-            #up-btn, #down-btn, #left-btn, #right-btn {
-                width: 50px;
-                height: 50px;
-                font-size: 20px;
-            }
+        .instructions {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 10px;
+            font-size: 14px;
+            text-align: right;
+            z-index: 100;
         }
     </style>
 </head>
@@ -150,14 +136,10 @@
     </div>
     
     <div id="status">Позиция: X: 0, Z: 0</div>
+    <div class="instructions">Поверните устройство для поворота<br>Используйте джойстик для движения</div>
     
-    <div id="controls">
-        <button id="up-btn">↑</button>
-        <div class="row">
-            <button id="left-btn">←</button>
-            <button id="right-btn">→</button>
-        </div>
-        <button id="down-btn">↓</button>
+    <div id="joystick">
+        <div id="joystick-knob"></div>
     </div>
     
     <div id="win-message">
@@ -173,9 +155,12 @@
         const wallHeight = 150;
         const playerHeight = 50;
         
-        // Player position
+        // Player position and rotation
         let playerX = 1;
         let playerZ = 1;
+        let playerRotationY = 0;
+        let playerRotationX = 20; // Slight downward angle
+        
         const exitX = mazeSize - 2;
         const exitZ = mazeSize - 2;
         
@@ -281,13 +266,15 @@
             const status = document.getElementById('status');
             status.textContent = `Позиция: X: ${playerX}, Z: ${playerZ}`;
             
-            // Update camera position
+            // Calculate center of maze
             const centerX = (mazeSize * cellSize) / 2;
             const centerZ = (mazeSize * cellSize) / 2;
             
+            // Update camera position with rotation
             mazeElement.style.transform = `
                 translate3d(${centerX - playerX * cellSize}px, ${playerHeight}px, ${centerZ - playerZ * cellSize}px)
-                rotateX(20deg)
+                rotateX(${playerRotationX}deg)
+                rotateY(${playerRotationY}deg)
             `;
             
             // Check win condition
@@ -297,75 +284,221 @@
         }
         
         function canMoveTo(newX, newZ) {
+            // Check bounds
             if (newX < 0 || newX >= mazeSize || newZ < 0 || newZ >= mazeSize) {
                 return false;
             }
+            // Check if it's a wall
             return maze[newZ][newX] === 0;
         }
         
-        // Movement functions
-        function moveUp() {
-            if (canMoveTo(playerX, playerZ - 1)) {
-                playerZ--;
+        // Movement based on rotation
+        function moveForward() {
+            const rad = playerRotationY * Math.PI / 180;
+            const newX = Math.round(playerX + Math.sin(rad));
+            const newZ = Math.round(playerZ + Math.cos(rad));
+            
+            if (canMoveTo(newX, newZ)) {
+                playerX = newX;
+                playerZ = newZ;
                 updatePlayerPosition();
             }
         }
         
-        function moveDown() {
-            if (canMoveTo(playerX, playerZ + 1)) {
-                playerZ++;
+        function moveBackward() {
+            const rad = playerRotationY * Math.PI / 180;
+            const newX = Math.round(playerX - Math.sin(rad));
+            const newZ = Math.round(playerZ - Math.cos(rad));
+            
+            if (canMoveTo(newX, newZ)) {
+                playerX = newX;
+                playerZ = newZ;
                 updatePlayerPosition();
             }
         }
         
         function moveLeft() {
-            if (canMoveTo(playerX - 1, playerZ)) {
-                playerX--;
+            const rad = playerRotationY * Math.PI / 180;
+            const newX = Math.round(playerX - Math.cos(rad));
+            const newZ = Math.round(playerZ + Math.sin(rad));
+            
+            if (canMoveTo(newX, newZ)) {
+                playerX = newX;
+                playerZ = newZ;
                 updatePlayerPosition();
             }
         }
         
         function moveRight() {
-            if (canMoveTo(playerX + 1, playerZ)) {
-                playerX++;
+            const rad = playerRotationY * Math.PI / 180;
+            const newX = Math.round(playerX + Math.cos(rad));
+            const newZ = Math.round(playerZ - Math.sin(rad));
+            
+            if (canMoveTo(newX, newZ)) {
+                playerX = newX;
+                playerZ = newZ;
                 updatePlayerPosition();
             }
         }
         
-        // Event listeners for buttons
-        document.getElementById('up-btn').addEventListener('click', moveUp);
-        document.getElementById('down-btn').addEventListener('click', moveDown);
-        document.getElementById('left-btn').addEventListener('click', moveLeft);
-        document.getElementById('right-btn').addEventListener('click', moveRight);
+        // Joystick implementation
+        const joystick = document.getElementById('joystick');
+        const joystickKnob = document.getElementById('joystick-knob');
+        let joystickActive = false;
+        let joystickOrigin = { x: 0, y: 0 };
+        let joystickKnobOrigin = { x: 0, y: 0 };
         
-        // Keyboard controls for desktop
-        document.addEventListener('keydown', (e) => {
-            switch(e.key) {
-                case 'ArrowUp':
-                    moveUp();
-                    break;
-                case 'ArrowDown':
-                    moveDown();
-                    break;
-                case 'ArrowLeft':
-                    moveLeft();
-                    break;
-                case 'ArrowRight':
-                    moveRight();
-                    break;
+        function setupJoystick() {
+            joystick.addEventListener('touchstart', handleJoystickStart, { passive: false });
+            joystick.addEventListener('mousedown', handleJoystickStart);
+            
+            document.addEventListener('touchmove', handleJoystickMove, { passive: false });
+            document.addEventListener('mousemove', handleJoystickMove);
+            
+            document.addEventListener('touchend', handleJoystickEnd);
+            document.addEventListener('mouseup', handleJoystickEnd);
+        }
+        
+        function handleJoystickStart(e) {
+            e.preventDefault();
+            joystickActive = true;
+            
+            const touch = e.touches ? e.touches[0] : e;
+            const rect = joystick.getBoundingClientRect();
+            
+            joystickOrigin = {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+            
+            joystickKnobOrigin = {
+                x: touch.clientX,
+                y: touch.clientY
+            };
+        }
+        
+        function handleJoystickMove(e) {
+            if (!joystickActive) return;
+            e.preventDefault();
+            
+            const touch = e.touches ? e.touches[0] : e;
+            const deltaX = touch.clientX - joystickKnobOrigin.x;
+            const deltaY = touch.clientY - joystickKnobOrigin.y;
+            
+            // Calculate distance from center
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            const maxDistance = joystick.offsetWidth / 2 - joystickKnob.offsetWidth / 2;
+            
+            // Normalize direction
+            let normalizedX = 0;
+            let normalizedY = 0;
+            
+            if (distance > 0) {
+                normalizedX = deltaX / distance;
+                normalizedY = deltaY / distance;
             }
-        });
+            
+            // Limit distance
+            const clampedDistance = Math.min(distance, maxDistance);
+            
+            // Move knob
+            joystickKnob.style.transform = `translate(${normalizedX * clampedDistance}px, ${normalizedY * clampedDistance}px)`;
+            
+            // Handle movement based on joystick position
+            if (distance > 20) { // Dead zone
+                const moveSpeed = Math.min(clampedDistance / maxDistance, 1);
+                
+                if (Math.abs(deltaY) > Math.abs(deltaX)) {
+                    // Vertical movement
+                    if (deltaY < 0) {
+                        moveForward();
+                    } else {
+                        moveBackward();
+                    }
+                } else {
+                    // Horizontal movement
+                    if (deltaX < 0) {
+                        moveLeft();
+                    } else {
+                        moveRight();
+                    }
+                }
+            }
+        }
+        
+        function handleJoystickEnd(e) {
+            joystickActive = false;
+            joystickKnob.style.transform = 'translate(0, 0)';
+        }
+        
+        // Device orientation for rotation
+        function setupDeviceOrientation() {
+            if (window.DeviceOrientationEvent) {
+                window.addEventListener('deviceorientation', handleOrientation);
+            }
+        }
+        
+        function handleOrientation(event) {
+            // For mobile devices
+            if (event.webkitCompassHeading) {
+                // iOS
+                playerRotationY = 360 - event.webkitCompassHeading;
+            } else {
+                // Android
+                playerRotationY = event.alpha;
+            }
+            
+            // Limit rotation for better gameplay
+            playerRotationX = Math.min(Math.max(event.beta, -30), 60);
+            
+            updatePlayerPosition();
+        }
+        
+        // Fallback touch rotation for devices without orientation sensors
+        let touchStartX = 0;
+        let touchStartY = 0;
+        
+        document.addEventListener('touchstart', function(e) {
+            if (e.touches.length === 2) {
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+            }
+        }, { passive: true });
+        
+        document.addEventListener('touchmove', function(e) {
+            if (e.touches.length === 2) {
+                const deltaX = e.touches[0].clientX - touchStartX;
+                const deltaY = e.touches[0].clientY - touchStartY;
+                
+                playerRotationY += deltaX * 0.5;
+                playerRotationX += deltaY * 0.5;
+                
+                // Limit vertical rotation
+                playerRotationX = Math.min(Math.max(playerRotationX, -30), 60);
+                
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+                
+                updatePlayerPosition();
+            }
+        }, { passive: false });
         
         // Restart game
-        document.getElementById('restart-btn').addEventListener('click', () => {
+        document.getElementById('restart-btn').addEventListener('click', function() {
             playerX = 1;
             playerZ = 1;
+            playerRotationY = 0;
+            playerRotationX = 20;
             document.getElementById('win-message').style.display = 'none';
             updatePlayerPosition();
         });
         
         // Initialize game
-        window.addEventListener('load', createMaze);
+        window.addEventListener('load', function() {
+            createMaze();
+            setupJoystick();
+            setupDeviceOrientation();
+        });
     </script>
 </body>
 </html>
