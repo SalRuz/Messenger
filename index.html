@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Лабиринт: Сбор монет</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: black;
+            font-family: Arial, sans-serif;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #top-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 200px;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 20px 10px;
+            z-index: 10;
+            font-size: 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            align-items: flex-start;
+            box-sizing: border-box;
+        }
+
+        #top-bar h3 {
+            margin: 0 0 15px 0;
+            color: #00CCCC;
+            text-align: center;
+            width: 100%;
+        }
+
+        #top-bar div {
+            margin: 5px 0;
+            padding: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            width: 100%;
+            text-align: left;
+        }
+
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 200px; /* сдвигаем игровую зону вправо, чтобы освободить место для топа */
+            width: calc(100vw - 200px);
+            height: 100vh;
+            background: black;
+        }
+
+        .wall {
+            position: absolute;
+            background: #00CCCC; /* бирюзовый */
+        }
+
+        .player {
+            position: absolute;
+            background: red;
+            z-index: 5;
+        }
+
+        .coin {
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: gold;
+            border-radius: 50%;
+            z-index: 3;
+            box-shadow: 0 0 6px rgba(255,215,0,0.8);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="top-bar">
+            <h3>ТОП ИГРОКОВ</h3>
+            <div>Игрок: <span id="score">0</span> монет</div>
+            <!-- Позже можно добавить топ-10 -->
+        </div>
+        <div id="game-canvas"></div>
+    </div>
+
+    <script>
+        const CELL_SIZE = 20; // уменьшили в 2 раза → карта визуально в 4 раза больше (по площади)
+        let player = null;
+        let score = 0;
+        let coins = [];
+        let grid = []; // 0 = проход, 1 = стена
+        let rows, cols;
+        let playerX, playerY;
+
+        const canvas = document.getElementById('game-canvas');
+        const scoreDisplay = document.getElementById('score');
+
+        // Инициализация при загрузке
+        window.onload = function() {
+            initGame();
+        };
+
+        function initGame() {
+            // Рассчитываем размеры сетки (теперь карта в 4 раза больше по площади)
+            const canvasHeight = canvas.offsetHeight;
+            const canvasWidth = canvas.offsetWidth;
+            rows = Math.floor(canvasHeight / CELL_SIZE);
+            cols = Math.floor(canvasWidth / CELL_SIZE);
+
+            // Создаём пустую сетку
+            grid = Array(rows).fill().map(() => Array(cols).fill(1)); // изначально все стены
+
+            // Генерируем лабиринт с помощью DFS (гарантирует отсутствие анклавов)
+            generateMaze(1, 1);
+
+            // Отрисовываем стены
+            renderWalls();
+
+            // Создаём игрока в случайном проходе
+            spawnPlayer();
+
+            // Запускаем появление монет каждые 5 секунд
+            setInterval(spawnCoin, 5000);
+
+            // Обработка клавиш
+            document.addEventListener('keydown', movePlayer);
+        }
+
+        function generateMaze(startY, startX) {
+            const stack = [];
+            const directions = [
+                { y: -2, x: 0 }, // вверх
+                { y: 2, x: 0 },  // вниз
+                { y: 0, x: -2 }, // влево
+                { y: 0, x: 2 }   // вправо
+            ];
+
+            grid[startY][startX] = 0; // начальная клетка — проход
+            stack.push({ y: startY, x: startX });
+
+            while (stack.length > 0) {
+                const current = stack[stack.length - 1];
+                const neighbors = [];
+
+                for (const dir of directions) {
+                    const ny = current.y + dir.y;
+                    const nx = current.x + dir.x;
+
+                    if (ny > 0 && ny < rows - 1 && nx > 0 && nx < cols - 1 && grid[ny][nx] === 1) {
+                        neighbors.push({ y: ny, x: nx, wallY: current.y + dir.y / 2, wallX: current.x + dir.x / 2 });
+                    }
+                }
+
+                if (neighbors.length > 0) {
+                    const chosen = neighbors[Math.floor(Math.random() * neighbors.length)];
+                    grid[chosen.y][chosen.x] = 0; // делаем соседа проходом
+                    grid[chosen.wallY][chosen.wallX] = 0; // убираем стену между
+                    stack.push({ y: chosen.y, x: chosen.x });
+                } else {
+                    stack.pop();
+                }
+            }
+        }
+
+        function renderWalls() {
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    if (grid[y][x] === 1) {
+                        const wall = document.createElement('div');
+                        wall.className = 'wall';
+                        wall.style.width = CELL_SIZE + 'px';
+                        wall.style.height = CELL_SIZE + 'px';
+                        wall.style.top = (y * CELL_SIZE) + 'px';
+                        wall.style.left = (x * CELL_SIZE) + 'px';
+                        canvas.appendChild(wall);
+                    }
+                }
+            }
+        }
+
+        function getRandomFreeCell() {
+            let x, y;
+            do {
+                y = Math.floor(Math.random() * rows);
+                x = Math.floor(Math.random() * cols);
+            } while (grid[y][x] !== 0); // ищем проход
+            return { x, y };
+        }
+
+        function spawnPlayer() {
+            const pos = getRandomFreeCell();
+            playerX = pos.x;
+            playerY = pos.y;
+
+            player = document.createElement('div');
+            player.className = 'player';
+            player.style.width = CELL_SIZE + 'px';
+            player.style.height = CELL_SIZE + 'px';
+            updatePlayerPosition();
+            canvas.appendChild(player);
+        }
+
+        function updatePlayerPosition() {
+            if (!player) return;
+            player.style.top = (playerY * CELL_SIZE) + 'px';
+            player.style.left = (playerX * CELL_SIZE) + 'px';
+        }
+
+        function movePlayer(e) {
+            let newX = playerX;
+            let newY = playerY;
+
+            switch (e.key) {
+                case 'ArrowUp':    newY--; break;
+                case 'ArrowDown':  newY++; break;
+                case 'ArrowLeft':  newX--; break;
+                case 'ArrowRight': newX++; break;
+                default: return;
+            }
+
+            // Проверяем, можно ли идти
+            if (newX >= 0 && newX < cols && newY >= 0 && newY < rows && grid[newY][newX] === 0) {
+                playerX = newX;
+                playerY = newY;
+                updatePlayerPosition();
+                checkCoinCollection();
+            }
+        }
+
+        function spawnCoin() {
+            const pos = getRandomFreeCell();
+            const coin = document.createElement('div');
+            coin.className = 'coin';
+            coin.style.top = (pos.y * CELL_SIZE + (CELL_SIZE - 16) / 2) + 'px'; // центрируем монетку в клетке
+            coin.style.left = (pos.x * CELL_SIZE + (CELL_SIZE - 16) / 2) + 'px';
+            coin.dataset.x = pos.x;
+            coin.dataset.y = pos.y;
+            canvas.appendChild(coin);
+            coins.push(coin);
+        }
+
+        function checkCoinCollection() {
+            for (let i = coins.length - 1; i >= 0; i--) {
+                const coin = coins[i];
+                const coinX = parseInt(coin.dataset.x);
+                const coinY = parseInt(coin.dataset.y);
+
+                if (playerX === coinX && playerY === coinY) {
+                    // Собираем монету
+                    coin.remove();
+                    coins.splice(i, 1);
+                    score++;
+                    scoreDisplay.textContent = score;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
