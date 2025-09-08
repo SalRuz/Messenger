@@ -1,6 +1,6 @@
 // Инициализация Three.js
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x87CEEB);
@@ -11,7 +11,7 @@ const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
 scene.add(ambientLight);
 
 const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-directionalLight.position.set(20, 50, 30);
+directionalLight.position.set(50, 100, 70);
 scene.add(directionalLight);
 
 // Загрузка текстур
@@ -20,100 +20,116 @@ const textureLoader = new THREE.TextureLoader();
 const brickTexture = textureLoader.load('https://avatars.mds.yandex.net/i?id=cd19cdb11d3fdb1ae1927afb09eea85c_l-16409040-images-thumbs&n=13');
 brickTexture.wrapS = THREE.RepeatWrapping;
 brickTexture.wrapT = THREE.RepeatWrapping;
-brickTexture.repeat.set(2, 2);
+brickTexture.repeat.set(4, 4); // Увеличим повтор для больших стен
 
 const houseTexture = textureLoader.load('https://avatars.mds.yandex.net/i?id=bcc62e7653b6b1e068912ae7e7a0ad5c_l-2925590-images-thumbs&n=13');
 houseTexture.wrapS = THREE.RepeatWrapping;
 houseTexture.wrapT = THREE.RepeatWrapping;
-houseTexture.repeat.set(1, 1);
+houseTexture.repeat.set(2, 2);
+
+const floorHouseTexture = textureLoader.load('https://static.insales-cdn.com/images/products/1/7649/613162465/%D0%B1%D0%B5%D0%BB%D1%8C%D1%84%D0%BE%D1%80.jpg');
+floorHouseTexture.wrapS = THREE.RepeatWrapping;
+floorHouseTexture.wrapT = THREE.RepeatWrapping;
+floorHouseTexture.repeat.set(4, 4);
+
+const grassTexture = textureLoader.load('https://i.pinimg.com/originals/d1/cc/9c/d1cc9c7433f5c12bac1d86726716af9e.jpg?nii=t');
+grassTexture.wrapS = THREE.RepeatWrapping;
+grassTexture.wrapT = THREE.RepeatWrapping;
+grassTexture.repeat.set(16, 16); // Большая карта — больше повторов
 
 // Физика игрока
 let player = {
     height: 1.8,
-    radius: 0.4,
+    radius: 0.5,
     velocity: new THREE.Vector3(0, 0, 0),
-    position: new THREE.Vector3(0, 0, 0),
+    position: new THREE.Vector3(0, 50, 0), // ✅ НАЧИНАЕТ ВЫСОКО В НЕБЕ!
     onGround: false,
-    speed: 0.15,
-    jumpStrength: 0.25
+    speed: 0.2,
+    jumpStrength: 0.3
 };
 
-// Камера = игрок
-camera.position.set(0, player.height, 0);
-scene.add(camera); // Добавляем камеру в сцену как объект
+camera.position.copy(player.position);
+scene.add(camera);
 
-// Коллекция для столкновений
+// Коллекция коллайдеров
 const collidableMeshes = [];
 
+// Функция создания стены
 function createWall(width, height, depth, x, y, z, rotY = 0, texture = brickTexture, isHouse = false) {
     const geometry = new THREE.BoxGeometry(width, height, depth);
     const material = new THREE.MeshStandardMaterial({ map: texture });
     const wall = new THREE.Mesh(geometry, material);
     wall.position.set(x, y, z);
     wall.rotation.y = rotY;
-    wall.userData = { isHouse: isHouse }; // Для дверей позже
+    wall.userData = { isHouse: isHouse };
     scene.add(wall);
     collidableMeshes.push(wall);
     return wall;
 }
 
-// Создание платформы (земли)
-function createPlatform(width, depth, x, z) {
+// Создание платформы (пола)
+function createPlatform(width, depth, x, z, texture = grassTexture) {
     const geometry = new THREE.PlaneGeometry(width, depth);
     const material = new THREE.MeshStandardMaterial({ 
-        map: brickTexture, 
+        map: texture,
         side: THREE.DoubleSide 
     });
     const platform = new THREE.Mesh(geometry, material);
     platform.rotation.x = -Math.PI / 2;
-    platform.position.set(x, 0, z);
+    platform.position.set(x, 0, z); // Все платформы на y=0
     scene.add(platform);
     collidableMeshes.push(platform);
+    return platform;
 }
 
-// Создание дома с дверным проемом
+// Создание большого дома (в 4 раза больше)
 function createHouse(x, z) {
-    const houseWidth = 6;
-    const houseDepth = 6;
-    const houseHeight = 5;
-    const wallThickness = 0.5;
+    const scale = 4;
+    const houseWidth = 6 * scale;
+    const houseDepth = 6 * scale;
+    const houseHeight = 5 * scale;
+    const wallThickness = 0.5 * scale;
 
-    // Пол дома
-    createPlatform(houseWidth, houseDepth, x, z);
+    // Пол дома — новая текстура
+    createPlatform(houseWidth, houseDepth, x, z, floorHouseTexture);
 
-    // Стены дома
+    // Стены
     createWall(houseWidth, houseHeight, wallThickness, x, houseHeight/2, z - houseDepth/2 + wallThickness/2, 0, houseTexture, true); // Передняя
     createWall(houseWidth, houseHeight, wallThickness, x, houseHeight/2, z + houseDepth/2 - wallThickness/2, 0, houseTexture, true);  // Задняя
-    createWall(wallThickness, houseHeight, houseDepth - 2, x - houseWidth/2 + wallThickness/2, houseHeight/2, z, 0, houseTexture, true); // Левая (с проемом)
-    createWall(wallThickness, houseHeight, houseDepth - 2, x + houseWidth/2 - wallThickness/2, houseHeight/2, z, 0, houseTexture, true); // Правая (с проемом)
+    createWall(wallThickness, houseHeight, houseDepth - 2 * scale, x - houseWidth/2 + wallThickness/2, houseHeight/2, z, 0, houseTexture, true); // Левая
+    createWall(wallThickness, houseHeight, houseDepth - 2 * scale, x + houseWidth/2 - wallThickness/2, houseHeight/2, z, 0, houseTexture, true); // Правая
 
     // Крыша
-    const roofGeometry = new THREE.ConeGeometry(houseWidth + 0.5, 3, 4);
+    const roofGeometry = new THREE.ConeGeometry(houseWidth + 1, 4 * scale, 4);
     const roofMaterial = new THREE.MeshStandardMaterial({ color: 0x5c4033 });
     const roof = new THREE.Mesh(roofGeometry, roofMaterial);
-    roof.position.set(x, houseHeight + 1.5, z);
+    roof.position.set(x, houseHeight + 2 * scale, z);
     roof.rotation.y = Math.PI / 4;
     scene.add(roof);
 }
 
-// Большая карта
-createPlatform(100, 100, 0, 0); // Основная земля
+// ✅ КАРТА В 4 РАЗА БОЛЬШЕ
+const mapSize = 400; // было 100 → теперь 400
 
-// Дома
-createHouse(15, 15);
-createHouse(-15, 20);
-createHouse(20, -15);
-createHouse(-20, -20);
+// Основной пол — трава
+createPlatform(mapSize, mapSize, 0, 0, grassTexture);
 
-// Дополнительные стены-ограждения
-for (let i = -50; i <= 50; i += 10) {
-    createWall(0.5, 3, 10, i, 1.5, -50);
-    createWall(0.5, 3, 10, i, 1.5, 50);
-    createWall(10, 3, 0.5, -50, 1.5, i);
-    createWall(10, 3, 0.5, 50, 1.5, i);
+// Дома (в 4 раза больше и дальше друг от друга)
+createHouse(80, 80);
+createHouse(-100, 120);
+createHouse(120, -100);
+createHouse(-120, -120);
+
+// Ограждения по краям карты
+for (let i = -mapSize/2 + 10; i <= mapSize/2 - 10; i += 20) {
+    createWall(0.5 * 4, 6 * 4, 20, i, 3 * 4, -mapSize/2, 0, brickTexture);
+    createWall(0.5 * 4, 6 * 4, 20, i, 3 * 4, mapSize/2, 0, brickTexture);
+    createWall(20, 6 * 4, 0.5 * 4, -mapSize/2, 3 * 4, i, 0, brickTexture);
+    createWall(20, 6 * 4, 0.5 * 4, mapSize/2, 3 * 4, i, 0, brickTexture);
 }
 
-// Управление
+// === УПРАВЛЕНИЕ ===
+
 let moveX = 0;
 let moveZ = 0;
 let canJump = false;
@@ -220,7 +236,7 @@ document.addEventListener('touchmove', (e) => {
     }
 });
 
-// Прыжок по тапу на экран (кроме джойстика)
+// Прыжок по тапу
 document.addEventListener('touchend', (e) => {
     if (!joystickActive && canJump) {
         player.velocity.y = player.jumpStrength;
@@ -229,14 +245,20 @@ document.addEventListener('touchend', (e) => {
     }
 });
 
-// Проверка столкновений AABB
+// === ФИЗИКА И СТОЛКНОВЕНИЯ ===
+
 function checkCollision() {
-    const playerBottom = player.position.y - player.height / 2;
-    const playerTop = player.position.y + player.height / 2;
-    const playerLeft = player.position.x - player.radius;
-    const playerRight = player.position.x + player.radius;
-    const playerFront = player.position.z - player.radius;
-    const playerBack = player.position.z + player.radius;
+    const p = player.position;
+    const v = player.velocity;
+    const h = player.height;
+    const r = player.radius;
+
+    const playerBottom = p.y - h/2;
+    const playerTop = p.y + h/2;
+    const playerLeft = p.x - r;
+    const playerRight = p.x + r;
+    const playerFront = p.z - r;
+    const playerBack = p.z + r;
 
     player.onGround = false;
 
@@ -244,55 +266,56 @@ function checkCollision() {
         const box = new THREE.Box3().setFromObject(mesh);
         const { min, max } = box;
 
-        // Проверка пересечения по горизонтали
+        // Горизонтальное пересечение?
         if (playerRight <= min.x || playerLeft >= max.x ||
             playerBack <= min.z || playerFront >= max.z) {
             continue;
         }
 
-        // Если это пол — проверяем снизу
-        if (Math.abs(mesh.rotation.x + Math.PI / 2) < 0.1) { // Это пол
-            if (playerBottom <= max.y && playerBottom + player.velocity.y >= max.y) {
-                player.position.y = max.y + player.height / 2;
+        // Если это пол (почти горизонтальный)
+        if (Math.abs(mesh.rotation.x + Math.PI/2) < 0.1 || mesh.rotation.x === 0) {
+            // Проверка снизу — приземление
+            if (playerBottom <= max.y && playerBottom + v.y >= max.y && v.y <= 0) {
+                player.position.y = max.y + h/2;
                 player.velocity.y = 0;
                 player.onGround = true;
                 canJump = true;
             }
         } else {
-            // Вертикальные стены — проверяем по X и Z
-            if (playerRight > min.x && playerLeft < min.x && player.velocity.x > 0) {
-                player.position.x = min.x - player.radius;
+            // Вертикальные стены — блокируем движение по X/Z
+            if (playerRight > min.x && playerLeft < min.x && v.x > 0) {
+                player.position.x = min.x - r;
                 player.velocity.x = 0;
             }
-            if (playerLeft < max.x && playerRight > max.x && player.velocity.x < 0) {
-                player.position.x = max.x + player.radius;
+            if (playerLeft < max.x && playerRight > max.x && v.x < 0) {
+                player.position.x = max.x + r;
                 player.velocity.x = 0;
             }
-            if (playerBack > min.z && playerFront < min.z && player.velocity.z > 0) {
-                player.position.z = min.z - player.radius;
+            if (playerBack > min.z && playerFront < min.z && v.z > 0) {
+                player.position.z = min.z - r;
                 player.velocity.z = 0;
             }
-            if (playerFront < max.z && playerBack > max.z && player.velocity.z < 0) {
-                player.position.z = max.z + player.radius;
+            if (playerFront < max.z && playerBack > max.z && v.z < 0) {
+                player.position.z = max.z + r;
                 player.velocity.z = 0;
             }
         }
     }
 }
 
-// Анимация и физика
+// Анимация
 function animate() {
     requestAnimationFrame(animate);
 
     // Гравитация
     if (!player.onGround) {
-        player.velocity.y -= 0.01; // гравитация
+        player.velocity.y -= 0.012; // немного сильнее гравитация для падения с высоты
     }
 
-    // Получаем направление движения
+    // Направление движения
     const direction = new THREE.Vector3();
     camera.getWorldDirection(direction);
-    direction.y = 0; // Игнорируем вертикаль для движения
+    direction.y = 0;
     direction.normalize();
 
     const right = new THREE.Vector3();
@@ -305,22 +328,22 @@ function animate() {
     // Обновляем позицию
     player.position.add(player.velocity);
 
-    // Проверка столкновений
+    // Столкновения
     checkCollision();
 
-    // Ограничение падения "вниз мира"
-    if (player.position.y < -10) {
-        player.position.set(0, 5, 0); // Респавн
+    // Респавн, если упал слишком низко
+    if (player.position.y < -50) {
+        player.position.set(0, 50, 0);
         player.velocity.set(0, 0, 0);
     }
 
-    // Применяем позицию к камере
+    // Обновляем камеру
     camera.position.copy(player.position);
 
     renderer.render(scene, camera);
 }
 
-// Адаптация экрана
+// Адаптация
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
