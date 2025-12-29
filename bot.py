@@ -2912,7 +2912,6 @@ def search_image(message):
         bot.reply_to(message, "❌ Укажи запрос\\. Пример: `Сомка фото котики`", parse_mode='MarkdownV2')
         return
     
-    # Отправляем "загрузка..."
     loading_msg = bot.reply_to(message, "🔍 Ищу картинку...")
     
     try:
@@ -2923,7 +2922,6 @@ def search_image(message):
             bot.edit_message_text("❌ Ничего не найдено.", chat_id=chat_id, message_id=loading_msg.message_id)
             return
         
-        # Выбираем случайную картинку из первых 5
         image_url = random.choice(results)["image"]
         
         bot.delete_message(chat_id, loading_msg.message_id)
@@ -2933,6 +2931,7 @@ def search_image(message):
     except Exception as e:
         logger.error(f"[IMAGE_SEARCH] Ошибка поиска: {e}")
         bot.edit_message_text("❌ Ошибка поиска\\. Попробуй позже\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
+
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("сомка нарисуй ") and m.chat.type in ['group', 'supergroup'])
 @error_handler
@@ -2956,23 +2955,18 @@ def generate_image(message):
         bot.reply_to(message, "❌ Слишком длинный запрос\\. Максимум 500 символов\\.", parse_mode='MarkdownV2')
         return
     
-    # Отправляем "генерация..."
     loading_msg = bot.reply_to(message, "🎨 Генерирую изображение... Это может занять 10-30 секунд.")
     
     try:
-        # Формируем URL для Pollinations.ai
         encoded_prompt = quote(prompt)
         seed = random.randint(1, 999999)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width=1024&height=1024&nologo=true"
         
-        # Скачиваем изображение
         response = requests.get(image_url, timeout=60)
         
         if response.status_code == 200:
             bot.delete_message(chat_id, loading_msg.message_id)
             
-            # Отправляем как фото
-            from io import BytesIO
             photo = BytesIO(response.content)
             photo.name = "generated.jpg"
             
@@ -2984,29 +2978,33 @@ def generate_image(message):
                 photo, 
                 caption=caption,
                 reply_to_message_id=message.message_id,
-                parse_mode='MarkdownV2')
+                parse_mode='MarkdownV2'
+            )
             logger.info(f"[IMAGE_GEN] Сгенерировано '{prompt[:50]}' для {user_id} в чате {chat_id}")
         else:
             bot.edit_message_text(
                 "❌ Не удалось сгенерировать изображение\\. Попробуй другой запрос\\.",
                 chat_id=chat_id,
                 message_id=loading_msg.message_id,
-                parse_mode='MarkdownV2')
+                parse_mode='MarkdownV2'
+            )
             
     except requests.exceptions.Timeout:
         bot.edit_message_text(
             "⏳ Генерация заняла слишком много времени\\. Попробуй ещё раз\\.",
             chat_id=chat_id,
             message_id=loading_msg.message_id,
-            parse_mode='MarkdownV2')
+            parse_mode='MarkdownV2'
+        )
     except Exception as e:
         logger.error(f"[IMAGE_GEN] Ошибка генерации: {e}")
         bot.edit_message_text(
             "❌ Ошибка генерации\\. Попробуй позже\\.",
             chat_id=chat_id,
             message_id=loading_msg.message_id,
-            parse_mode='MarkdownV2')
-
+            parse_mode='MarkdownV2'
+    )
+        
 def process_steal_timers():
     current_time = time.time()
     to_remove = []
