@@ -1580,6 +1580,7 @@ def show_kidnap_stats(message):
     bot.reply_to(message, response, parse_mode='MarkdownV2')
 
 SALRUZO_USER_ID = 1170970828
+PEXELS_API_KEY = "JdCL2H1f4FxbFq3HAMhk3ELTBXV6IqPIHO16S11EaOfthzLF5TitQR5u"
 @bot.message_handler(commands=['resetkidnap'])
 @error_handler
 def reset_kidnap_cooldown_only(message):
@@ -2917,31 +2918,59 @@ def search_image(message):
     loading_msg = bot.reply_to(message, "🔍 Ищу картинку...")
     
     try:
-        # Используем Unsplash Source (бесплатно, без API ключа)
-        # Генерируем случайный URL для получения разных картинок
-        seed = random.randint(1, 100000)
+        headers = {
+            "Authorization": PEXELS_API_KEY
+        }
+        
         encoded_query = quote(query)
+        url = f"https://api.pexels.com/v1/search?query={encoded_query}&per_page=15&locale=ru-RU"
         
-        # Unsplash Source API - возвращает случайное фото по запросу
-        image_url = f"https://source.unsplash.com/800x600/?{encoded_query}&sig={seed}"
+        response = requests.get(url, headers=headers, timeout=10)
         
-        # Проверяем что URL работает
-        response = requests.head(image_url, timeout=10, allow_redirects=True)
+        logger.info(f"[IMAGE_SEARCH] Pexels ответ: {response.status_code}")
         
         if response.status_code == 200:
+            data = response.json()
+            photos = data.get("photos", [])
+            
+            if not photos:
+                bot.edit_message_text("❌ Ничего не найдено\\. Попробуй другой запрос\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
+                return
+            
+            # Выбираем случайное фото
+            photo = random.choice(photos)
+            image_url = photo["src"]["large"]  # Можно также: original, large2x, medium, small
+            photographer = photo.get("photographer", "Unknown")
+            
             bot.delete_message(chat_id, loading_msg.message_id)
-            bot.send_photo(chat_id, response.url, reply_to_message_id=message.message_id)
-            logger.info(f"[IMAGE_SEARCH] Запрос '{query}' от {user_id} в чате {chat_id}")
+            
+            escaped_query = escape_markdown_v2(query)
+            escaped_author = escape_markdown_v2(photographer)
+            caption = f"🔍 *{escaped_query}*\n📷 {escaped_author} \\(Pexels\\)"
+            
+            bot.send_photo(
+                chat_id, 
+                image_url, 
+                caption=caption,
+                reply_to_message_id=message.message_id,
+                parse_mode='MarkdownV2'
+            )
+            logger.info(f"[IMAGE_SEARCH] Успешно: '{query}' от {user_id}")
+            
+        elif response.status_code == 401:
+            logger.error("[IMAGE_SEARCH] Неверный API ключ Pexels")
+            bot.edit_message_text("❌ Ошибка авторизации API\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
         else:
-            bot.edit_message_text("❌ Ничего не найдено\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
+            logger.error(f"[IMAGE_SEARCH] Ошибка Pexels: {response.status_code}")
+            bot.edit_message_text("❌ Ошибка поиска\\. Попробуй позже\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
         
     except Exception as e:
-        logger.error(f"[IMAGE_SEARCH] Ошибка поиска: {e}")
+        logger.error(f"[IMAGE_SEARCH] Ошибка: {e}")
         try:
             bot.edit_message_text("❌ Ошибка поиска\\. Попробуй позже\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
         except:
             pass
-
+            
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("сомка нарисуй ") and m.chat.type in ['group', 'supergroup'])
 @error_handler
 def generate_image(message):
@@ -2964,42 +2993,65 @@ def generate_image(message):
         bot.reply_to(message, "❌ Слишком длинный запрос\\. Максимум 500 символов\\.", parse_mode='MarkdownV2')
         return
     
-    loading_msg = bot.reply_to(message, "🎨 Генерирую изображение... Это может занять 10-30 секунд.")
+    loading_msg = bot.reply_to(message, "🎨 Генерирую изображение... Это может занять 15-60 секунд.")
     
-    try:
-        encoded_prompt = quote(prompt)
-        seed = random.randint(1, 999999)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width=1024&height=1024&nologo=true"
-        
-        logger.info(f"[IMAGE_GEN] Запрос к Pollinations: {prompt[:50]}...")
-        
-        # Делаем запрос с увеличенным таймаутом
-        response = requests.get(image_url, timeout=120, stream=True)
-        
-        logger.info(f"[IMAGE_GEN] Статус ответа: {response.status_code}")
-        
-        if response.status_code == 200:
-            # Читаем контент
-            image_data = response.content
+    success = False
+    image_data = None
+    
+    # Список серверов для попыток
+    servers = [
+        {
+            "name": "Pollinations",
+            "url": lambda p, s: f"https://image.pollinations.ai/prompt/{quote(p)}?seed={s}&width=1024&height=1024&nologo=true&model=flux"
+        },
+        {
+            "name": "Pollinations Turbo",
+            "url": lambda p, s: f"https://image.pollinations.ai/prompt/{quote(p)}?seed={s}&width=512&height=512&nologo=true&model=turbo"
+        },
+    ]
+    
+    seed = random.randint(1, 999999)
+    
+    for server in servers:
+        if success:
+            break
             
-            if len(image_data) < 1000:  # Слишком маленький файл - вероятно ошибка
-                logger.error(f"[IMAGE_GEN] Получен слишком маленький ответ: {len(image_data)} байт")
-                bot.edit_message_text(
-                    "❌ Сервер вернул пустой ответ\\. Попробуй другой запрос\\.",
-                    chat_id=chat_id,
-                    message_id=loading_msg.message_id,
-                    parse_mode='MarkdownV2'
-                )
-                return
+        try:
+            url = server["url"](prompt, seed)
+            logger.info(f"[IMAGE_GEN] Попытка {server['name']}...")
             
+            response = requests.get(url, timeout=90, stream=True)
+            
+            if response.status_code == 200:
+                image_data = response.content
+                
+                # Проверяем что это реально изображение
+                if len(image_data) > 5000 and (image_data[:4] == b'\xff\xd8\xff\xe0' or image_data[:8] == b'\x89PNG\r\n\x1a\n'):
+                    success = True
+                    logger.info(f"[IMAGE_GEN] Успех с {server['name']}, размер: {len(image_data)}")
+                else:
+                    logger.warning(f"[IMAGE_GEN] {server['name']} вернул не изображение")
+            else:
+                logger.warning(f"[IMAGE_GEN] {server['name']} вернул {response.status_code}")
+                
+        except requests.exceptions.Timeout:
+            logger.warning(f"[IMAGE_GEN] Timeout для {server['name']}")
+        except Exception as e:
+            logger.warning(f"[IMAGE_GEN] Ошибка {server['name']}: {e}")
+    
+    if success and image_data:
+        try:
             bot.delete_message(chat_id, loading_msg.message_id)
-            
-            photo = BytesIO(image_data)
-            photo.name = "generated.jpg"
-            
-            escaped_prompt = escape_markdown_v2(prompt[:100])
-            caption = f"🎨 *Запрос:* {escaped_prompt}"
-            
+        except:
+            pass
+        
+        photo = BytesIO(image_data)
+        photo.name = "generated.png"
+        
+        escaped_prompt = escape_markdown_v2(prompt[:100])
+        caption = f"🎨 *Запрос:* {escaped_prompt}"
+        
+        try:
             bot.send_photo(
                 chat_id, 
                 photo, 
@@ -3007,49 +3059,20 @@ def generate_image(message):
                 reply_to_message_id=message.message_id,
                 parse_mode='MarkdownV2'
             )
-            logger.info(f"[IMAGE_GEN] Успешно сгенерировано для {user_id} в чате {chat_id}")
-        else:
-            logger.error(f"[IMAGE_GEN] Ошибка HTTP: {response.status_code}")
-            bot.edit_message_text(
-                "❌ Сервер генерации недоступен\\. Попробуй позже\\.",
-                chat_id=chat_id,
-                message_id=loading_msg.message_id,
-                parse_mode='MarkdownV2'
-            )
-            
-    except requests.exceptions.Timeout:
-        logger.error("[IMAGE_GEN] Timeout при генерации")
+            logger.info(f"[IMAGE_GEN] Отправлено пользователю {user_id}")
+        except Exception as e:
+            logger.error(f"[IMAGE_GEN] Ошибка отправки фото: {e}")
+            bot.send_message(chat_id, "❌ Не удалось отправить изображение\\.", parse_mode='MarkdownV2')
+    else:
         try:
             bot.edit_message_text(
-                "⏳ Генерация заняла слишком много времени\\. Попробуй ещё раз\\.",
+                "❌ Все серверы генерации недоступны\\. Попробуй позже\\.",
                 chat_id=chat_id,
                 message_id=loading_msg.message_id,
                 parse_mode='MarkdownV2'
             )
         except:
             pass
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"[IMAGE_GEN] Ошибка соединения: {e}")
-        try:
-            bot.edit_message_text(
-                "❌ Не удалось подключиться к серверу генерации\\.",
-                chat_id=chat_id,
-                message_id=loading_msg.message_id,
-                parse_mode='MarkdownV2'
-            )
-        except:
-            pass
-    except Exception as e:
-        logger.error(f"[IMAGE_GEN] Неизвестная ошибка: {type(e).__name__}: {e}")
-        try:
-            bot.edit_message_text(
-                "❌ Ошибка генерации\\. Попробуй позже\\.",
-                chat_id=chat_id,
-                message_id=loading_msg.message_id,
-                parse_mode='MarkdownV2'
-            )
-        except:
-            pass  
             
 def process_steal_timers():
     current_time = time.time()
