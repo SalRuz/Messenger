@@ -48,6 +48,7 @@ OFFLINE_USERS_FILE = "offline_users.json"
 FEATURES_FILE = "features.json"
 PAUSED_TIMERS_FILE = "paused_timers.json"
 EXECUT_QUEUE_FILE = "execut_queue.json"
+DAILY_REPORTS_FILE = "daily_reports.json"
 # 🧠 Глобальные переменные
 user_custom_names = {}
 chat_members_cache = {}
