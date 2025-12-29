@@ -1484,55 +1484,22 @@ def stop_daily_report(message):
         return
     
     if chat_id in daily_reports:
+        # Открепляем последнее сообщение
+        old_message_id = daily_reports[chat_id].get("last_message_id")
+        if old_message_id:
+            try:
+                bot.unpin_chat_message(chat_id, old_message_id)
+                logger.info(f"[DAILY_REPORT] Откреплено сообщение при отключении отчёта в чате {chat_id}")
+            except Exception as e:
+                logger.warning(f"[DAILY_REPORT] Не удалось открепить сообщение при отключении: {e}")
+        
         del daily_reports[chat_id]
         save_daily_reports()
         bot.reply_to(message, "✅ Ежедневный отчёт отключён\\.", parse_mode='MarkdownV2')
         logger.info(f"[DAILY_REPORT] Отчёт отключён в чате {chat_id}")
     else:
         bot.reply_to(message, "❌ В этом чате нет активного ежедневного отчёта\\.", parse_mode='MarkdownV2')
-
-@bot.message_handler(commands=['give'])
-@error_handler
-def give_coins(message):
-    if message.from_user.id != SALRUZO_USER_ID:
-        bot.reply_to(message, "❌ Эта команда доступна только @SalRuzO.")
-        return
-    args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(
-            message,
-            "❌ Использование: `/give <количество>`\nИли ответьте на сообщение: `/give <количество>`", parse_mode='MarkdownV2')
-        return
-    try:
-        amount = int(args[1])
-        if amount <= 0:
-            bot.reply_to(message, "❌ Сумма должна быть положительной\\.", parse_mode='MarkdownV2')
-            return
-    except ValueError:
-        bot.reply_to(message, "❌ Пожалуйста, укажите целое число\\.", parse_mode='MarkdownV2')
-        return
-    chat_id = message.chat.id
-    if chat_id not in user_coins:
-        user_coins[chat_id] = {}
-    if message.reply_to_message:
-        target_user = message.reply_to_message.from_user
-        target_id = target_user.id
-        ensure_user_in_cache(chat_id, target_id, target_user)
-        target_name = get_clickable_name(chat_id, target_id, target_user)
-    else:
-        target_id = message.from_user.id
-        target_name = None
-    user_coins[chat_id][target_id] = user_coins[chat_id].get(target_id, 0) + amount
-    save_coins()
-    balance = user_coins[chat_id][target_id]
-    if message.reply_to_message:
-        text = f"✅ Выдано {amount} монет игроку {target_name}\\!"
-    else:
-        amount_esc = escape_markdown_v2(str(amount))
-        balance_esc = escape_markdown_v2(str(balance))
-        text = f"✅ Выдано {amount_esc} монет тебе\\! Твой баланс: {balance_esc} 💰"
-    bot.reply_to(message, text, parse_mode='MarkdownV2')
-
+        
 @bot.message_handler(commands=['job'])
 @error_handler
 def earn_coins(message):
@@ -2850,7 +2817,7 @@ def delete_muted_media_messages(message):
             logger.warning(f"Не удалось удалить медиа-сообщение от замученного: {e}")
 
 def daily_report_loop():
-    """Фоновый процесс: отправляет ежедневные отчёты в 9:00."""
+    """Фоновый процесс: отправляет ежедневные отчёты в 9:00, закрепляет новые и откредляет старые."""
     while True:
         try:
             now = datetime.now()
@@ -2871,6 +2838,14 @@ def daily_report_loop():
                 
                 # Проверяем, не прошла ли дата
                 if today > target_date:
+                    # Откреепляем последнее сообщение перед удалением
+                    old_message_id = report.get("last_message_id")
+                    if old_message_id:
+                        try:
+                            bot.unpin_chat_message(chat_id, old_message_id)
+                        except Exception as e:
+                            logger.warning(f"[DAILY_REPORT] Не удалось открепить сообщение при завершении: {e}")
+                    
                     del daily_reports[chat_id]
                     save_daily_reports()
                     try:
@@ -2882,6 +2857,15 @@ def daily_report_loop():
                     except Exception as e:
                         logger.warning(f"[DAILY_REPORT] Не удалось уведомить чат {chat_id} о завершении: {e}")
                     continue
+                
+                # Открепляем старое сообщение
+                old_message_id = report.get("last_message_id")
+                if old_message_id:
+                    try:
+                        bot.unpin_chat_message(chat_id, old_message_id)
+                        logger.info(f"[DAILY_REPORT] Откреплено старое сообщение {old_message_id} в чате {chat_id}")
+                    except Exception as e:
+                        logger.warning(f"[DAILY_REPORT] Не удалось открепить сообщение {old_message_id}: {e}")
                 
                 # Считаем дни
                 days_left = (target_date - today).days
@@ -2914,18 +2898,29 @@ def daily_report_loop():
                 )
                 
                 try:
-                    bot.send_message(chat_id, message_text, parse_mode='MarkdownV2')
+                    # Отправляем новое сообщение
+                    sent_message = bot.send_message(chat_id, message_text, parse_mode='MarkdownV2')
+                    
+                    # Закрепляем новое сообщение
+                    try:
+                        bot.pin_chat_message(chat_id, sent_message.message_id, disable_notification=True)
+                        logger.info(f"[DAILY_REPORT] Закреплено сообщение {sent_message.message_id} в чате {chat_id}")
+                    except Exception as e:
+                        logger.warning(f"[DAILY_REPORT] Не удалось закрепить сообщение: {e}")
+                    
+                    # Обновляем данные
                     daily_reports[chat_id]["last_sent"] = str(today)
+                    daily_reports[chat_id]["last_message_id"] = sent_message.message_id
                     save_daily_reports()
                     logger.info(f"[DAILY_REPORT] Отправлен отчёт в чат {chat_id}, осталось {days_left} дней")
+                    
                 except Exception as e:
                     logger.warning(f"[DAILY_REPORT] Не удалось отправить отчёт в чат {chat_id}: {e}")
                     
         except Exception as e:
             logger.error(f"[DAILY_REPORT] Ошибка в цикле: {e}")
         
-        time.sleep(60)  # Проверяем каждую минуту# 🔄 Фоновый таймер для кражи монет (запускается каждую минуту)
-def background_timer_loop():
+        time.sleep(60)  # Проверяем каждую минутуdef background_timer_loop():
     while True:
         time.sleep(60)  # проверяем каждую минуту
         try:
