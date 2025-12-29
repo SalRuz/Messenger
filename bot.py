@@ -11,7 +11,6 @@ import math
 from random import choices
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
-from duckduckgo_search import DDGS
 from urllib.parse import quote
 from io import BytesIO
 # 🔧 Настройка логирования
@@ -83,7 +82,8 @@ paused_timers = {}
 execut_queue = {}
 daily_reports = {} 
 minesweeper_data = {} 
-minesweeper_stats = {}  
+minesweeper_stats = {}
+image_search_cache = {} 
 def create_bot():
     try:
         return telebot.TeleBot(BOT_TOKEN, parse_mode=None)
@@ -2896,6 +2896,62 @@ def handle_somka_who(message):
         response = f'Мне кажется, "{escaped_query}" — {user_link}'
         bot.reply_to(message, response, parse_mode='MarkdownV2')
         
+claude-opus-4-5-20251101-thinking-32k
+claude-opus-4-5-20251101-thinking-32k
+
+Thought for 6 seconds
+
+Из лога видно две проблемы:
+
+DuckDuckGo Search - ошибка 403 Ratelimit. DuckDuckGo блокирует частые запросы с одного IP. Это проблема хостинга - многие боты используют тот же IP и DuckDuckGo их блокирует.
+
+Сомка нарисуй - нет ошибки в логе, просто нет ответа. Возможно timeout 60 секунд не хватает для Pollinations, или сам сервис не отвечает.
+
+Решения:
+
+Для поиска картинок - использовать другой API:
+
+Unsplash (бесплатно, но нужен API ключ)
+Pexels (бесплатно, API ключ)
+Google Custom Search (ограничения)
+Или просто убрать эту функцию и оставить только генерацию
+Для генерации - Pollinations.ai должен работать. Нужно проверить:
+
+Увеличить timeout
+Добавить логирование
+Возможно проблема с requests на хостинге
+Давай предложу альтернативное решение:
+
+Для поиска - использовать Unsplash API (бесплатно, надёжно)
+Для генерации - улучшить код Pollinations с лучшей обработкой ошибок
+Или можно попробовать другой подход для поиска - через прямой HTTP запрос к поисковику с парсингом, но это ненадёжно.
+
+Лучший вариант - заменить DuckDuckGo на что-то более надёжное.
+
+Есть несколько вариантов для замены: Unsplash предлагает 50 запросов в час с хорошим качеством фото, Pexels дает 200 запросов в час, Pixabay тоже бесплатный. Все требуют API ключ, но это просто получить. Проще всего использовать Unsplash или Pexels с инструкцией по регистрации.
+
+Альтернативный подход — использовать duckduckgo-search с задержками между запросами, но если IP уже заблокирован, это не поможет. SerpAPI имеет бесплатный уровень, но требует больше настроек. Надежнее всего заменить DuckDuckGo на Pexels и улучшить обработку ошибок в коде.
+
+Рассматриваю несколько путей: Pexels API предоставляет 200 запросов в час без ограничений, требует только регистрации и API ключа. Можно также убрать поиск вообще, если это не критично для функциональности. Если остаться с DuckDuckGo, добавить задержки между запросами, хотя на общем хостинге это может не сработать. Для генерации нужно расширить логирование, чтобы увидеть, где именно происходит сбой.
+
+Интересно, что в логах для команд с утками и быками нет ошибок — только запись о получении команды. Это указывает на то, что проблема может быть в самом процессе генерации или в том, как обрабатывается ответ от сервиса. Стоит проверить, может ли быть проблема в передаче параметров или в обработке результата.
+
+Похоже, запрос к изображению зависает на этапе requests.get() и не получает ответ, при этом timeout не срабатывает как ожидается. Нужно добавить более детальное логирование вокруг этого запроса, убедиться что timeout действительно работает, и рассмотреть альтернативные способы загрузки изображений.
+
+Проблемы и решения
+Проблема 1: DuckDuckGo блокирует (403 Ratelimit)
+DuckDuckGo блокирует частые запросы с общих IP хостинга. Это типичная проблема.
+
+Проблема 2: Генерация зависает
+В логе нет ошибки для "Сомка нарисуй" — значит запрос просто зависает.
+
+Решение: Заменить оба обработчика
+Замени функцию search_image на эту (использует Pexels):
+Python
+
+# Глобальная переменная для кэша (добавь после других глобальных переменных)
+image_search_cache = {}  # {query: [urls]}
+
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("сомка фото ") and m.chat.type in ['group', 'supergroup'])
 @error_handler
 def search_image(message):
@@ -2917,23 +2973,30 @@ def search_image(message):
     loading_msg = bot.reply_to(message, "🔍 Ищу картинку...")
     
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=5))
+        # Используем Unsplash Source (бесплатно, без API ключа)
+        # Генерируем случайный URL для получения разных картинок
+        seed = random.randint(1, 100000)
+        encoded_query = quote(query)
         
-        if not results:
-            bot.edit_message_text("❌ Ничего не найдено.", chat_id=chat_id, message_id=loading_msg.message_id)
-            return
+        # Unsplash Source API - возвращает случайное фото по запросу
+        image_url = f"https://source.unsplash.com/800x600/?{encoded_query}&sig={seed}"
         
-        image_url = random.choice(results)["image"]
+        # Проверяем что URL работает
+        response = requests.head(image_url, timeout=10, allow_redirects=True)
         
-        bot.delete_message(chat_id, loading_msg.message_id)
-        bot.send_photo(chat_id, image_url, reply_to_message_id=message.message_id)
-        logger.info(f"[IMAGE_SEARCH] Запрос '{query}' от {user_id} в чате {chat_id}")
+        if response.status_code == 200:
+            bot.delete_message(chat_id, loading_msg.message_id)
+            bot.send_photo(chat_id, response.url, reply_to_message_id=message.message_id)
+            logger.info(f"[IMAGE_SEARCH] Запрос '{query}' от {user_id} в чате {chat_id}")
+        else:
+            bot.edit_message_text("❌ Ничего не найдено\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
         
     except Exception as e:
         logger.error(f"[IMAGE_SEARCH] Ошибка поиска: {e}")
-        bot.edit_message_text("❌ Ошибка поиска\\. Попробуй позже\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
-
+        try:
+            bot.edit_message_text("❌ Ошибка поиска\\. Попробуй позже\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
+        except:
+            pass
 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("сомка нарисуй ") and m.chat.type in ['group', 'supergroup'])
 @error_handler
@@ -2964,12 +3027,30 @@ def generate_image(message):
         seed = random.randint(1, 999999)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width=1024&height=1024&nologo=true"
         
-        response = requests.get(image_url, timeout=60)
+        logger.info(f"[IMAGE_GEN] Запрос к Pollinations: {prompt[:50]}...")
+        
+        # Делаем запрос с увеличенным таймаутом
+        response = requests.get(image_url, timeout=120, stream=True)
+        
+        logger.info(f"[IMAGE_GEN] Статус ответа: {response.status_code}")
         
         if response.status_code == 200:
+            # Читаем контент
+            image_data = response.content
+            
+            if len(image_data) < 1000:  # Слишком маленький файл - вероятно ошибка
+                logger.error(f"[IMAGE_GEN] Получен слишком маленький ответ: {len(image_data)} байт")
+                bot.edit_message_text(
+                    "❌ Сервер вернул пустой ответ\\. Попробуй другой запрос\\.",
+                    chat_id=chat_id,
+                    message_id=loading_msg.message_id,
+                    parse_mode='MarkdownV2'
+                )
+                return
+            
             bot.delete_message(chat_id, loading_msg.message_id)
             
-            photo = BytesIO(response.content)
+            photo = BytesIO(image_data)
             photo.name = "generated.jpg"
             
             escaped_prompt = escape_markdown_v2(prompt[:100])
@@ -2982,31 +3063,50 @@ def generate_image(message):
                 reply_to_message_id=message.message_id,
                 parse_mode='MarkdownV2'
             )
-            logger.info(f"[IMAGE_GEN] Сгенерировано '{prompt[:50]}' для {user_id} в чате {chat_id}")
+            logger.info(f"[IMAGE_GEN] Успешно сгенерировано для {user_id} в чате {chat_id}")
         else:
+            logger.error(f"[IMAGE_GEN] Ошибка HTTP: {response.status_code}")
             bot.edit_message_text(
-                "❌ Не удалось сгенерировать изображение\\. Попробуй другой запрос\\.",
+                "❌ Сервер генерации недоступен\\. Попробуй позже\\.",
                 chat_id=chat_id,
                 message_id=loading_msg.message_id,
                 parse_mode='MarkdownV2'
             )
             
     except requests.exceptions.Timeout:
-        bot.edit_message_text(
-            "⏳ Генерация заняла слишком много времени\\. Попробуй ещё раз\\.",
-            chat_id=chat_id,
-            message_id=loading_msg.message_id,
-            parse_mode='MarkdownV2'
-        )
+        logger.error("[IMAGE_GEN] Timeout при генерации")
+        try:
+            bot.edit_message_text(
+                "⏳ Генерация заняла слишком много времени\\. Попробуй ещё раз\\.",
+                chat_id=chat_id,
+                message_id=loading_msg.message_id,
+                parse_mode='MarkdownV2'
+            )
+        except:
+            pass
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[IMAGE_GEN] Ошибка соединения: {e}")
+        try:
+            bot.edit_message_text(
+                "❌ Не удалось подключиться к серверу генерации\\.",
+                chat_id=chat_id,
+                message_id=loading_msg.message_id,
+                parse_mode='MarkdownV2'
+            )
+        except:
+            pass
     except Exception as e:
-        logger.error(f"[IMAGE_GEN] Ошибка генерации: {e}")
-        bot.edit_message_text(
-            "❌ Ошибка генерации\\. Попробуй позже\\.",
-            chat_id=chat_id,
-            message_id=loading_msg.message_id,
-            parse_mode='MarkdownV2'
-    )
-        
+        logger.error(f"[IMAGE_GEN] Неизвестная ошибка: {type(e).__name__}: {e}")
+        try:
+            bot.edit_message_text(
+                "❌ Ошибка генерации\\. Попробуй позже\\.",
+                chat_id=chat_id,
+                message_id=loading_msg.message_id,
+                parse_mode='MarkdownV2'
+            )
+        except:
+            pass  
+            
 def process_steal_timers():
     current_time = time.time()
     to_remove = []
