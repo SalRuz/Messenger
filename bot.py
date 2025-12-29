@@ -10,6 +10,7 @@ import threading
 import math
 from random import choices
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime, timedelta
 # 🔧 Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +71,8 @@ pending_triggers = {}
 offline_users = {}
 chat_features = {}
 paused_timers = {}
-execut_queue = {}  # {chat_id: [user_id1, user_id2, ...]}
+execut_queue = {}
+daily_reports = {} 
 def create_bot():
     try:
         return telebot.TeleBot(BOT_TOKEN, parse_mode=None)
@@ -80,6 +82,19 @@ def create_bot():
         return create_bot()
 bot = create_bot()
 # 📂 Загрузка данных
+def load_daily_reports():
+    global daily_reports
+    if os.path.exists(DAILY_REPORTS_FILE):
+        try:
+            with open(DAILY_REPORTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                daily_reports = {int(chat_id): info for chat_id, info in data.items()}
+                logger.info(f"Загружено {len(daily_reports)} ежедневных отчётов.")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки ежедневных отчётов: {e}")
+            daily_reports = {}
+    else:
+        daily_reports = {}
 def load_execut_queue():
     global execut_queue
     if os.path.exists(EXECUT_QUEUE_FILE):
@@ -385,6 +400,14 @@ def load_inventory():
     else:
         user_inventory = {}
 # 💾 Сохранение данных
+def save_daily_reports():
+    try:
+        data = {str(chat_id): info for chat_id, info in daily_reports.items()}
+        with open(DAILY_REPORTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info("Ежедневные отчёты сохранены.")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения ежедневных отчётов: {e}")
 def save_execut_queue():
     try:
         with open(EXECUT_QUEUE_FILE, "w", encoding="utf-8") as f:
@@ -1391,6 +1414,82 @@ def reset_kidnap_cooldown_only(message):
         else:
             bot.reply_to(message, "✅ У тебя и так нет активного кулдауна.")
 
+@bot.message_handler(commands=['dailyreport'])
+@error_handler
+def set_daily_report(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    # Проверка прав: только создатель чата или SalRuzO
+    if user_id != SALRUZO_USER_ID and not is_user_chat_owner(chat_id, user_id):
+        bot.reply_to(message, "❌ Эта команда доступна только создателю чата\\.", parse_mode='MarkdownV2')
+        return
+    
+    # Парсим аргументы: /dailyreport 12.12.2026 комментарий
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        bot.reply_to(
+            message, 
+            "❌ Использование: `/dailyreport ДД\\.ММ\\.ГГГГ комментарий`\n"
+            "Пример: `/dailyreport 12\\.12\\.2026 До Нового года\\!`", 
+            parse_mode='MarkdownV2'
+        )
+        return
+    
+    date_str = args[1]
+    comment = args[2]
+    
+    # Парсим дату
+    try:
+        target_date = datetime.strptime(date_str, "%d.%m.%Y")
+    except ValueError:
+        bot.reply_to(message, "❌ Неверный формат даты\\. Используй: ДД\\.ММ\\.ГГГГ", parse_mode='MarkdownV2')
+        return
+    
+    # Проверяем что дата в будущем
+    if target_date.date() <= datetime.now().date():
+        bot.reply_to(message, "❌ Дата должна быть в будущем\\.", parse_mode='MarkdownV2')
+        return
+    
+    # Сохраняем
+    daily_reports[chat_id] = {
+        "target_date": target_date.strftime("%Y-%m-%d"),
+        "comment": comment,
+        "last_sent": None
+    }
+    save_daily_reports()
+    
+    escaped_date = escape_markdown_v2(date_str)
+    escaped_comment = escape_markdown_v2(comment)
+    bot.reply_to(
+        message, 
+        f"✅ Ежедневный отчёт установлен\\!\n"
+        f"📅 Дата: {escaped_date}\n"
+        f"💬 Комментарий: {escaped_comment}", 
+        parse_mode='MarkdownV2'
+    )
+    logger.info(f"[DAILY_REPORT] Установлен отчёт в чате {chat_id} до {date_str}")
+
+
+@bot.message_handler(commands=['stopreport'])
+@error_handler
+def stop_daily_report(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    # Проверка прав: только создатель чата или SalRuzO
+    if user_id != SALRUZO_USER_ID and not is_user_chat_owner(chat_id, user_id):
+        bot.reply_to(message, "❌ Эта команда доступна только создателю чата\\.", parse_mode='MarkdownV2')
+        return
+    
+    if chat_id in daily_reports:
+        del daily_reports[chat_id]
+        save_daily_reports()
+        bot.reply_to(message, "✅ Ежедневный отчёт отключён\\.", parse_mode='MarkdownV2')
+        logger.info(f"[DAILY_REPORT] Отчёт отключён в чате {chat_id}")
+    else:
+        bot.reply_to(message, "❌ В этом чате нет активного ежедневного отчёта\\.", parse_mode='MarkdownV2')
+
 @bot.message_handler(commands=['give'])
 @error_handler
 def give_coins(message):
@@ -1808,22 +1907,14 @@ def start_execut(message):
     if chat_id in execut_queue:
         bot.reply_to(message, "⚠️ Операция /execut уже запущена в этом чате.")
         return
-
     regular_users = set()
     bots = set()
     bot_id = bot.get_me().id
-
-    # Участники из кэша
     if chat_id in chat_members_cache:
         for uid, data in chat_members_cache[chat_id].items():
             if uid == bot_id:
                 continue
-            # Telegram не хранит флаг is_bot в кэше, но можно попробовать определить по username или имени
-            # Однако надёжнее — запросить через API, но это дорого.
-            # Поэтому пока считаем всех не-админов обычными, а ботов вынесем отдельно ниже.
             regular_users.add(uid)
-
-    # Администраторы (включая создателя и ботов-админов)
     try:
         admins = bot.get_chat_administrators(chat_id)
         for admin in admins:
@@ -1836,11 +1927,7 @@ def start_execut(message):
                 regular_users.add(uid)
     except Exception as e:
         logger.warning(f"[EXECUT] Не удалось получить админов чата {chat_id}: {e}")
-
-    # Удаляем ботов из regular_users, если они там оказались
     regular_users -= bots
-
-    # Формируем список: сначала обычные, потом боты
     all_members = list(regular_users) + list(bots)
 
     logger.info(f"[EXECUT] Найдено {len(regular_users)} обычных участников и {len(bots)} ботов в чате {chat_id}")
@@ -1855,8 +1942,7 @@ def start_execut(message):
         f"✅ Запущена операция *ликвидации*.\n"
         f"Будет исключено {len(regular_users)} участников по одному каждые 60 минут.\n"
         f"После завершения — бот покинет чат.",
-        parse_mode="Markdown"
-    )
+        parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("trig_replace_"))
 def handle_replace_trigger(call):
@@ -2762,7 +2848,82 @@ def delete_muted_media_messages(message):
         except Exception as e:
             logger.warning(f"Не удалось удалить медиа-сообщение от замученного: {e}")
 
-# 🔄 Фоновый таймер для кражи монет (запускается каждую минуту)
+def daily_report_loop():
+    """Фоновый процесс: отправляет ежедневные отчёты в 9:00."""
+    while True:
+        try:
+            now = datetime.now()
+            target_hour = 9  # Час отправки (можно изменить)
+            
+            for chat_id, report in list(daily_reports.items()):
+                target_date = datetime.strptime(report["target_date"], "%Y-%m-%d").date()
+                today = now.date()
+                last_sent = report.get("last_sent")
+                
+                # Проверяем, отправляли ли сегодня
+                if last_sent == str(today):
+                    continue
+                
+                # Проверяем время (отправляем после target_hour)
+                if now.hour < target_hour:
+                    continue
+                
+                # Проверяем, не прошла ли дата
+                if today > target_date:
+                    del daily_reports[chat_id]
+                    save_daily_reports()
+                    try:
+                        bot.send_message(
+                            chat_id, 
+                            "📅 Целевая дата отчёта прошла\\. Ежедневный отчёт автоматически отключён\\.", 
+                            parse_mode='MarkdownV2'
+                        )
+                    except Exception as e:
+                        logger.warning(f"[DAILY_REPORT] Не удалось уведомить чат {chat_id} о завершении: {e}")
+                    continue
+                
+                # Считаем дни
+                days_left = (target_date - today).days
+                comment = report["comment"]
+                formatted_date = target_date.strftime("%d.%m.%Y")
+                
+                if days_left == 0:
+                    days_text = "🎉 Сегодня этот день!"
+                elif days_left == 1:
+                    days_text = "⏰ Остался 1 день!"
+                else:
+                    # Правильное склонение
+                    if days_left % 10 == 1 and days_left % 100 != 11:
+                        days_word = "день"
+                    elif 2 <= days_left % 10 <= 4 and not (12 <= days_left % 100 <= 14):
+                        days_word = "дня"
+                    else:
+                        days_word = "дней"
+                    days_text = f"⏳ Осталось: {days_left} {days_word}"
+                
+                escaped_date = escape_markdown_v2(formatted_date)
+                escaped_comment = escape_markdown_v2(comment)
+                escaped_days = escape_markdown_v2(days_text)
+                
+                message_text = (
+                    f"📆 *Ежедневный отчёт*\n\n"
+                    f"📅 Дата: {escaped_date}\n"
+                    f"{escaped_days}\n\n"
+                    f"💬 {escaped_comment}"
+                )
+                
+                try:
+                    bot.send_message(chat_id, message_text, parse_mode='MarkdownV2')
+                    daily_reports[chat_id]["last_sent"] = str(today)
+                    save_daily_reports()
+                    logger.info(f"[DAILY_REPORT] Отправлен отчёт в чат {chat_id}, осталось {days_left} дней")
+                except Exception as e:
+                    logger.warning(f"[DAILY_REPORT] Не удалось отправить отчёт в чат {chat_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"[DAILY_REPORT] Ошибка в цикле: {e}")
+        
+        time.sleep(60)  # Проверяем каждую минуту# 🔄 Фоновый таймер для кражи монет (запускается каждую минуту)
 def background_timer_loop():
     while True:
         time.sleep(60)  # проверяем каждую минуту
@@ -2792,6 +2953,7 @@ def auto_save():
         save_features()
         save_paused_timers()
         save_execut_queue()
+        save_daily_reports()
 # 🚀 Запуск бота
 if __name__ == '__main__':
     logger.info("=== ЗАПУСК БОТА СОМКА ===")
@@ -2812,6 +2974,7 @@ if __name__ == '__main__':
     load_features()
     load_paused_timers()
     load_execut_queue()
+    load_daily_reports()
     try:
         bot.set_my_commands([
             telebot.types.BotCommand("members", "👥 Участники чата"),
@@ -2842,6 +3005,7 @@ if __name__ == '__main__':
     threading.Thread(target=background_timer_loop, daemon=True).start()
     threading.Thread(target=auto_save, daemon=True).start()
     threading.Thread(target=execut_kick_loop, daemon=True).start()
+    threading.Thread(target=daily_report_loop, daemon=True).start()
     while True:
         try:
             logger.info("Запуск polling...")
