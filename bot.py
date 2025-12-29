@@ -11,6 +11,9 @@ import math
 from random import choices
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta
+from duckduckgo_search import DDGS
+from urllib.parse import quote
+from io import BytesIO
 # 🔧 Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -2890,6 +2893,119 @@ def handle_somka_who(message):
         user_link = get_clickable_name(chat_id, user_id)  # уже экранировано и в MarkdownV2
         response = f'Мне кажется, "{escaped_query}" — {user_link}'
         bot.reply_to(message, response, parse_mode='MarkdownV2')
+        
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("сомка фото ") and m.chat.type in ['group', 'supergroup'])
+@error_handler
+def search_image(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if chat_id in muted_users and user_id in muted_users[chat_id]:
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except:
+            pass
+        return
+    
+    query = message.text[len("сомка фото "):].strip()
+    if not query:
+        bot.reply_to(message, "❌ Укажи запрос\\. Пример: `Сомка фото котики`", parse_mode='MarkdownV2')
+        return
+    
+    # Отправляем "загрузка..."
+    loading_msg = bot.reply_to(message, "🔍 Ищу картинку...")
+    
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.images(query, max_results=5))
+        
+        if not results:
+            bot.edit_message_text("❌ Ничего не найдено.", chat_id=chat_id, message_id=loading_msg.message_id)
+            return
+        
+        # Выбираем случайную картинку из первых 5
+        image_url = random.choice(results)["image"]
+        
+        bot.delete_message(chat_id, loading_msg.message_id)
+        bot.send_photo(chat_id, image_url, reply_to_message_id=message.message_id)
+        logger.info(f"[IMAGE_SEARCH] Запрос '{query}' от {user_id} в чате {chat_id}")
+        
+    except Exception as e:
+        logger.error(f"[IMAGE_SEARCH] Ошибка поиска: {e}")
+        bot.edit_message_text("❌ Ошибка поиска\\. Попробуй позже\\.", chat_id=chat_id, message_id=loading_msg.message_id, parse_mode='MarkdownV2')
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("сомка нарисуй ") and m.chat.type in ['group', 'supergroup'])
+@error_handler
+def generate_image(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if chat_id in muted_users and user_id in muted_users[chat_id]:
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except:
+            pass
+        return
+    
+    prompt = message.text[len("сомка нарисуй "):].strip()
+    if not prompt:
+        bot.reply_to(message, "❌ Укажи что нарисовать\\. Пример: `Сомка нарисуй кот в космосе`", parse_mode='MarkdownV2')
+        return
+    
+    if len(prompt) > 500:
+        bot.reply_to(message, "❌ Слишком длинный запрос\\. Максимум 500 символов\\.", parse_mode='MarkdownV2')
+        return
+    
+    # Отправляем "генерация..."
+    loading_msg = bot.reply_to(message, "🎨 Генерирую изображение... Это может занять 10-30 секунд.")
+    
+    try:
+        # Формируем URL для Pollinations.ai
+        encoded_prompt = quote(prompt)
+        seed = random.randint(1, 999999)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width=1024&height=1024&nologo=true"
+        
+        # Скачиваем изображение
+        response = requests.get(image_url, timeout=60)
+        
+        if response.status_code == 200:
+            bot.delete_message(chat_id, loading_msg.message_id)
+            
+            # Отправляем как фото
+            from io import BytesIO
+            photo = BytesIO(response.content)
+            photo.name = "generated.jpg"
+            
+            escaped_prompt = escape_markdown_v2(prompt[:100])
+            caption = f"🎨 *Запрос:* {escaped_prompt}"
+            
+            bot.send_photo(
+                chat_id, 
+                photo, 
+                caption=caption,
+                reply_to_message_id=message.message_id,
+                parse_mode='MarkdownV2')
+            logger.info(f"[IMAGE_GEN] Сгенерировано '{prompt[:50]}' для {user_id} в чате {chat_id}")
+        else:
+            bot.edit_message_text(
+                "❌ Не удалось сгенерировать изображение\\. Попробуй другой запрос\\.",
+                chat_id=chat_id,
+                message_id=loading_msg.message_id,
+                parse_mode='MarkdownV2')
+            
+    except requests.exceptions.Timeout:
+        bot.edit_message_text(
+            "⏳ Генерация заняла слишком много времени\\. Попробуй ещё раз\\.",
+            chat_id=chat_id,
+            message_id=loading_msg.message_id,
+            parse_mode='MarkdownV2')
+    except Exception as e:
+        logger.error(f"[IMAGE_GEN] Ошибка генерации: {e}")
+        bot.edit_message_text(
+            "❌ Ошибка генерации\\. Попробуй позже\\.",
+            chat_id=chat_id,
+            message_id=loading_msg.message_id,
+            parse_mode='MarkdownV2')
 
 def process_steal_timers():
     current_time = time.time()
