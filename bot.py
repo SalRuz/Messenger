@@ -49,6 +49,11 @@ FEATURES_FILE = "features.json"
 PAUSED_TIMERS_FILE = "paused_timers.json"
 EXECUT_QUEUE_FILE = "execut_queue.json"
 DAILY_REPORTS_FILE = "daily_reports.json"
+MINESWEEPER_FILE = "minesweeper_data.json"
+MINESWEEPER_REWARD = 300
+MINESWEEPER_FIELD_SIZE = 5
+MINESWEEPER_MINES_COUNT = 7
+MINESWEEPER_SAFE_TO_WIN = 8 
 # 🧠 Глобальные переменные
 user_custom_names = {}
 chat_members_cache = {}
@@ -74,6 +79,8 @@ chat_features = {}
 paused_timers = {}
 execut_queue = {}
 daily_reports = {} 
+minesweeper_data = {} 
+minesweeper_stats = {}  
 def create_bot():
     try:
         return telebot.TeleBot(BOT_TOKEN, parse_mode=None)
@@ -83,6 +90,25 @@ def create_bot():
         return create_bot()
 bot = create_bot()
 # 📂 Загрузка данных
+def load_minesweeper_data():
+    global minesweeper_data, minesweeper_stats
+    if os.path.exists(MINESWEEPER_FILE):
+        try:
+            with open(MINESWEEPER_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                minesweeper_data = {int(chat_id): info for chat_id, info in data.get("events", {}).items()}
+                minesweeper_stats = {
+                    int(chat_id): {int(uid): stats for uid, stats in users.items()}
+                    for chat_id, users in data.get("stats", {}).items()
+                }
+                logger.info(f"Загружены данные Сапёра для {len(minesweeper_data)} чатов.")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки данных Сапёра: {e}")
+            minesweeper_data = {}
+            minesweeper_stats = {}
+    else:
+        minesweeper_data = {}
+        minesweeper_stats = {}
 def load_daily_reports():
     global daily_reports
     if os.path.exists(DAILY_REPORTS_FILE):
@@ -401,6 +427,20 @@ def load_inventory():
     else:
         user_inventory = {}
 # 💾 Сохранение данных
+def save_minesweeper_data():
+    try:
+        data = {
+            "events": {str(chat_id): info for chat_id, info in minesweeper_data.items()},
+            "stats": {
+                str(chat_id): {str(uid): stats for uid, stats in users.items()}
+                for chat_id, users in minesweeper_stats.items()
+            }
+        }
+        with open(MINESWEEPER_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info("Данные Сапёра сохранены.")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения данных Сапёра: {e}")
 def save_daily_reports():
     try:
         data = {str(chat_id): info for chat_id, info in daily_reports.items()}
@@ -620,6 +660,157 @@ def save_inventory():
     except Exception as e:
         logger.error(f"Ошибка сохранения инвентаря: {e}")
 # 🧠 Вспомогательные функции
+def generate_minesweeper_field():
+    """Генерирует игровое поле с минами."""
+    field = [[0 for _ in range(MINESWEEPER_FIELD_SIZE)] for _ in range(MINESWEEPER_FIELD_SIZE)]
+    mines_placed = 0
+    
+    while mines_placed < MINESWEEPER_MINES_COUNT:
+        x = random.randint(0, MINESWEEPER_FIELD_SIZE - 1)
+        y = random.randint(0, MINESWEEPER_FIELD_SIZE - 1)
+        if field[y][x] != -1:
+            field[y][x] = -1  # -1 = мина
+            mines_placed += 1
+    
+    # Подсчёт чисел вокруг мин
+    for y in range(MINESWEEPER_FIELD_SIZE):
+        for x in range(MINESWEEPER_FIELD_SIZE):
+            if field[y][x] == -1:
+                continue
+            count = 0
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < MINESWEEPER_FIELD_SIZE and 0 <= nx < MINESWEEPER_FIELD_SIZE:
+                        if field[ny][nx] == -1:
+                            count += 1
+            field[y][x] = count
+    
+    return field
+
+
+def create_minesweeper_keyboard(game_data, game_over=False, show_all=False):
+    """Создаёт клавиатуру игрового поля."""
+    keyboard = InlineKeyboardMarkup(row_width=MINESWEEPER_FIELD_SIZE)
+    field = game_data["field"]
+    revealed = game_data["revealed"]
+    chat_id = game_data["chat_id"]
+    
+    number_emojis = ["⬜", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+    
+    for y in range(MINESWEEPER_FIELD_SIZE):
+        row = []
+        for x in range(MINESWEEPER_FIELD_SIZE):
+            cell_value = field[y][x]
+            is_revealed = revealed[y][x]
+            
+            if show_all or is_revealed:
+                if cell_value == -1:
+                    emoji = "💥" if is_revealed else "💣"
+                else:
+                    emoji = number_emojis[cell_value]
+                callback = "minesweeper_noop"
+            else:
+                emoji = "🟦"
+                callback = f"minesweeper_click_{chat_id}_{x}_{y}"
+            
+            row.append(InlineKeyboardButton(emoji, callback_data=callback))
+        keyboard.row(*row)
+    
+    return keyboard
+
+
+def get_minesweeper_status_text(game_data, status="playing"):
+    """Генерирует текст статуса игры."""
+    player_id = game_data["player_id"]
+    chat_id = game_data["chat_id"]
+    safe_revealed = game_data["safe_revealed"]
+    safe_to_win = game_data["safe_to_win"]
+    
+    player_name = get_clickable_name(chat_id, player_id)
+    
+    if status == "playing":
+        progress = f"{safe_revealed}/{safe_to_win}"
+        return (
+            f"💣 *Сапёр*\n\n"
+            f"🎮 Играет: {player_name}\n"
+            f"✅ Прогресс: {escape_markdown_v2(progress)}\n"
+            f"🎯 Открой {safe_to_win} безопасных клеток\\!"
+        )
+    elif status == "win":
+        return (
+            f"🎉 *ПОБЕДА\\!*\n\n"
+            f"🏆 {player_name} выиграл\\(а\\) {MINESWEEPER_REWARD} монет\\!"
+        )
+    elif status == "lose":
+        return (
+            f"💥 *ВЗРЫВ\\!*\n\n"
+            f"😵 {player_name} наступил\\(а\\) на мину\\!"
+        )
+
+
+def start_minesweeper_event(chat_id):
+    """Запускает событие приёма заявок на игру."""
+    if chat_id not in minesweeper_data:
+        minesweeper_data[chat_id] = {}
+    
+    minesweeper_data[chat_id]["accepting"] = True
+    minesweeper_data[chat_id]["excluded_players"] = minesweeper_data[chat_id].get("excluded_players", [])
+    minesweeper_data[chat_id]["active_game"] = None
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("🎮 Участвовать!", callback_data=f"minesweeper_join_{chat_id}"))
+    
+    try:
+        msg = bot.send_message(
+            chat_id,
+            f"💣 *Событие: Сапёр\\!*\n\n"
+            f"🎁 Награда: {MINESWEEPER_REWARD} монет\n"
+            f"🎯 Открой {MINESWEEPER_SAFE_TO_WIN} безопасных клеток, чтобы победить\\!\n\n"
+            f"👇 Нажми кнопку, чтобы начать игру\\!",
+            reply_markup=keyboard,
+            parse_mode='MarkdownV2'
+        )
+        minesweeper_data[chat_id]["accept_message_id"] = msg.message_id
+        save_minesweeper_data()
+        logger.info(f"[MINESWEEPER] Запущено событие в чате {chat_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[MINESWEEPER] Ошибка запуска события в чате {chat_id}: {e}")
+        return False
+
+
+def restart_minesweeper_accepting(chat_id, loser_id):
+    """Перезапускает приём заявок после проигрыша."""
+    if chat_id not in minesweeper_data:
+        minesweeper_data[chat_id] = {}
+    
+    excluded = minesweeper_data[chat_id].get("excluded_players", [])
+    if loser_id not in excluded:
+        excluded.append(loser_id)
+    
+    minesweeper_data[chat_id]["accepting"] = True
+    minesweeper_data[chat_id]["excluded_players"] = excluded
+    minesweeper_data[chat_id]["active_game"] = None
+    
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("🎮 Участвовать!", callback_data=f"minesweeper_join_{chat_id}"))
+    
+    try:
+        msg = bot.send_message(
+            chat_id,
+            f"💣 *Ещё одна попытка\\!*\n\n"
+            f"Предыдущий игрок проиграл\\.\\.\\. Кто следующий\\?\n\n"
+            f"🎁 Награда: {MINESWEEPER_REWARD} монет\n"
+            f"👇 Нажми кнопку, чтобы начать игру\\!",
+            reply_markup=keyboard,
+            parse_mode='MarkdownV2'
+        )
+        minesweeper_data[chat_id]["accept_message_id"] = msg.message_id
+        save_minesweeper_data()
+        logger.info(f"[MINESWEEPER] Перезапущен приём заявок в чате {chat_id}")
+    except Exception as e:
+        logger.error(f"[MINESWEEPER] Ошибка перезапуска в чате {chat_id}: {e}")
 def log_and_cache_message(message):
     try:
         chat_type = message.chat.type
@@ -1499,6 +1690,69 @@ def stop_daily_report(message):
         logger.info(f"[DAILY_REPORT] Отчёт отключён в чате {chat_id}")
     else:
         bot.reply_to(message, "❌ В этом чате нет активного ежедневного отчёта\\.", parse_mode='MarkdownV2')
+
+@bot.message_handler(commands=['minestat'])
+@error_handler
+def show_minesweeper_stats(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if chat_id in muted_users and user_id in muted_users[chat_id]:
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except:
+            pass
+        return
+    
+    if chat_id not in minesweeper_stats or not minesweeper_stats[chat_id]:
+        bot.reply_to(message, "📊 В этом чате ещё никто не играл в Сапёра\\.", parse_mode='MarkdownV2')
+        return
+    
+    # Сортируем по победам
+    sorted_players = sorted(
+        minesweeper_stats[chat_id].items(),
+        key=lambda x: (x[1]["wins"], -x[1]["losses"]),
+        reverse=True
+    )
+    
+    lines = []
+    for uid, stats in sorted_players[:15]:
+        name = get_clickable_name(chat_id, uid)
+        wins = stats["wins"]
+        losses = stats["losses"]
+        lines.append(f"• {name}: ✅ {wins} / ❌ {losses}")
+    
+    response = "💣 *Статистика Сапёра:*\n\n" + "\n".join(lines)
+    bot.reply_to(message, response, parse_mode='MarkdownV2')
+
+
+@bot.message_handler(commands=['minesweeper'])
+@error_handler
+def force_minesweeper_event(message):
+    """Принудительный запуск события (только для SalRuzO)."""
+    if message.from_user.id != SALRUZO_USER_ID:
+        bot.reply_to(message, "❌ Эта команда доступна только @SalRuzO\\.", parse_mode='MarkdownV2')
+        return
+    
+    chat_id = message.chat.id
+    
+    # Проверяем, нет ли активной игры
+    if chat_id in minesweeper_data:
+        if minesweeper_data[chat_id].get("active_game"):
+            bot.reply_to(message, "❌ В этом чате уже идёт игра\\.", parse_mode='MarkdownV2')
+            return
+        if minesweeper_data[chat_id].get("accepting"):
+            bot.reply_to(message, "❌ В этом чате уже открыт приём заявок\\.", parse_mode='MarkdownV2')
+            return
+    
+    # Сбрасываем исключённых игроков
+    if chat_id in minesweeper_data:
+        minesweeper_data[chat_id]["excluded_players"] = []
+    
+    if start_minesweeper_event(chat_id):
+        bot.reply_to(message, "✅ Событие Сапёра запущено\\!", parse_mode='MarkdownV2')
+    else:
+        bot.reply_to(message, "❌ Не удалось запустить событие\\.", parse_mode='MarkdownV2')
         
 @bot.message_handler(commands=['job'])
 @error_handler
@@ -1911,6 +2165,197 @@ def start_execut(message):
         f"Будет исключено {len(regular_users)} участников по одному каждые 60 минут.\n"
         f"После завершения — бот покинет чат.",
         parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("minesweeper_join_"))
+def handle_minesweeper_join(call):
+    chat_id = int(call.data.split("_")[-1])
+    user_id = call.from_user.id
+    
+    if chat_id not in minesweeper_data or not minesweeper_data[chat_id].get("accepting"):
+        bot.answer_callback_query(call.id, "❌ Событие уже завершено.", show_alert=True)
+        return
+    
+    excluded = minesweeper_data[chat_id].get("excluded_players", [])
+    if user_id in excluded:
+        bot.answer_callback_query(call.id, "❌ Ты уже проиграл в этом событии.", show_alert=True)
+        return
+    
+    # Останавливаем приём заявок
+    minesweeper_data[chat_id]["accepting"] = False
+    
+    # Удаляем сообщение с кнопкой участия
+    try:
+        accept_msg_id = minesweeper_data[chat_id].get("accept_message_id")
+        if accept_msg_id:
+            bot.delete_message(chat_id, accept_msg_id)
+    except:
+        pass
+    
+    # Создаём игру
+    field = generate_minesweeper_field()
+    revealed = [[False for _ in range(MINESWEEPER_FIELD_SIZE)] for _ in range(MINESWEEPER_FIELD_SIZE)]
+    
+    game_data = {
+        "chat_id": chat_id,
+        "player_id": user_id,
+        "field": field,
+        "revealed": revealed,
+        "safe_revealed": 0,
+        "safe_to_win": MINESWEEPER_SAFE_TO_WIN,
+        "message_id": None
+    }
+    
+    keyboard = create_minesweeper_keyboard(game_data)
+    status_text = get_minesweeper_status_text(game_data, "playing")
+    
+    try:
+        msg = bot.send_message(chat_id, status_text, reply_markup=keyboard, parse_mode='MarkdownV2')
+        game_data["message_id"] = msg.message_id
+        minesweeper_data[chat_id]["active_game"] = game_data
+        save_minesweeper_data()
+        bot.answer_callback_query(call.id, "🎮 Игра началась!")
+        logger.info(f"[MINESWEEPER] Игрок {user_id} начал игру в чате {chat_id}")
+    except Exception as e:
+        logger.error(f"[MINESWEEPER] Ошибка создания игры: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка создания игры.", show_alert=True)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("minesweeper_click_"))
+def handle_minesweeper_click(call):
+    parts = call.data.split("_")
+    chat_id = int(parts[2])
+    x = int(parts[3])
+    y = int(parts[4])
+    user_id = call.from_user.id
+    
+    if chat_id not in minesweeper_data:
+        bot.answer_callback_query(call.id, "❌ Игра не найдена.", show_alert=True)
+        return
+    
+    game_data = minesweeper_data[chat_id].get("active_game")
+    if not game_data:
+        bot.answer_callback_query(call.id, "❌ Нет активной игры.", show_alert=True)
+        return
+    
+    if user_id != game_data["player_id"]:
+        player_name = get_clickable_name(chat_id, game_data["player_id"])
+        bot.answer_callback_query(call.id, "👀 Ты можешь только наблюдать.", show_alert=True)
+        return
+    
+    if game_data["revealed"][y][x]:
+        bot.answer_callback_query(call.id, "Уже открыто!", show_alert=False)
+        return
+    
+    # Открываем клетку
+    game_data["revealed"][y][x] = True
+    cell_value = game_data["field"][y][x]
+    
+    if cell_value == -1:
+        # ПРОИГРЫШ - наступил на мину
+        if chat_id not in minesweeper_stats:
+            minesweeper_stats[chat_id] = {}
+        if user_id not in minesweeper_stats[chat_id]:
+            minesweeper_stats[chat_id][user_id] = {"wins": 0, "losses": 0}
+        minesweeper_stats[chat_id][user_id]["losses"] += 1
+        
+        # Показываем всё поле
+        keyboard = create_minesweeper_keyboard(game_data, game_over=True, show_all=True)
+        status_text = get_minesweeper_status_text(game_data, "lose")
+        
+        try:
+            bot.edit_message_text(
+                status_text,
+                chat_id=chat_id,
+                message_id=game_data["message_id"],
+                reply_markup=keyboard,
+                parse_mode='MarkdownV2'
+            )
+        except Exception as e:
+            logger.warning(f"[MINESWEEPER] Ошибка обновления сообщения: {e}")
+        
+        bot.answer_callback_query(call.id, "💥 БУМ! Ты проиграл!", show_alert=True)
+        
+        minesweeper_data[chat_id]["active_game"] = None
+        save_minesweeper_data()
+        
+        logger.info(f"[MINESWEEPER] Игрок {user_id} проиграл в чате {chat_id}")
+        
+        # Перезапускаем приём заявок через 3 секунды
+        def delayed_restart():
+            time.sleep(3)
+            restart_minesweeper_accepting(chat_id, user_id)
+        
+        threading.Thread(target=delayed_restart, daemon=True).start()
+        
+    else:
+        # Безопасная клетка
+        game_data["safe_revealed"] += 1
+        
+        if game_data["safe_revealed"] >= game_data["safe_to_win"]:
+            # ПОБЕДА!
+            if chat_id not in minesweeper_stats:
+                minesweeper_stats[chat_id] = {}
+            if user_id not in minesweeper_stats[chat_id]:
+                minesweeper_stats[chat_id][user_id] = {"wins": 0, "losses": 0}
+            minesweeper_stats[chat_id][user_id]["wins"] += 1
+            
+            # Выдаём награду
+            if chat_id not in user_coins:
+                user_coins[chat_id] = {}
+            user_coins[chat_id][user_id] = user_coins[chat_id].get(user_id, 0) + MINESWEEPER_REWARD
+            save_coins()
+            
+            # Показываем всё поле
+            keyboard = create_minesweeper_keyboard(game_data, game_over=True, show_all=True)
+            status_text = get_minesweeper_status_text(game_data, "win")
+            
+            try:
+                bot.edit_message_text(
+                    status_text,
+                    chat_id=chat_id,
+                    message_id=game_data["message_id"],
+                    reply_markup=keyboard,
+                    parse_mode='MarkdownV2'
+                )
+            except Exception as e:
+                logger.warning(f"[MINESWEEPER] Ошибка обновления сообщения: {e}")
+            
+            bot.answer_callback_query(call.id, f"🎉 ПОБЕДА! +{MINESWEEPER_REWARD} монет!", show_alert=True)
+            
+            # Устанавливаем следующее событие через день
+            minesweeper_data[chat_id]["active_game"] = None
+            minesweeper_data[chat_id]["excluded_players"] = []
+            minesweeper_data[chat_id]["next_event_time"] = time.time() + 86400 + random.randint(0, 43200)  # 24-36 часов
+            save_minesweeper_data()
+            
+            logger.info(f"[MINESWEEPER] Игрок {user_id} выиграл в чате {chat_id}")
+            
+        else:
+            # Продолжаем игру
+            keyboard = create_minesweeper_keyboard(game_data)
+            status_text = get_minesweeper_status_text(game_data, "playing")
+            
+            try:
+                bot.edit_message_text(
+                    status_text,
+                    chat_id=chat_id,
+                    message_id=game_data["message_id"],
+                    reply_markup=keyboard,
+                    parse_mode='MarkdownV2'
+                )
+            except Exception as e:
+                logger.warning(f"[MINESWEEPER] Ошибка обновления сообщения: {e}")
+            
+            remaining = game_data["safe_to_win"] - game_data["safe_revealed"]
+            bot.answer_callback_query(call.id, f"✅ Осталось: {remaining}")
+        
+        minesweeper_data[chat_id]["active_game"] = game_data
+        save_minesweeper_data()
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "minesweeper_noop")
+def handle_minesweeper_noop(call):
+    bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("trig_replace_"))
 def handle_replace_trigger(call):
@@ -2919,7 +3364,51 @@ def daily_report_loop():
                     
         except Exception as e:
             logger.error(f"[DAILY_REPORT] Ошибка в цикле: {e}")
+
+def minesweeper_event_loop():
+    """Фоновый процесс: запускает события Сапёра в случайное время."""
+    while True:
+        try:
+            current_time = time.time()
+            
+            # Проверяем все чаты с активностью
+            all_chats = set()
+            for d in [user_coins, chat_members_cache, kidnap_points]:
+                all_chats.update(d.keys())
+            
+            for chat_id in all_chats:
+                # Пропускаем если игры отключены
+                if not is_kidnap_game_enabled(chat_id):
+                    continue
+                
+                # Инициализируем данные если нет
+                if chat_id not in minesweeper_data:
+                    # Первое событие - через случайное время от 1 до 24 часов
+                    minesweeper_data[chat_id] = {
+                        "next_event_time": current_time + random.randint(3600, 86400),
+                        "active_game": None,
+                        "excluded_players": [],
+                        "accepting": False
+                    }
+                    save_minesweeper_data()
+                    continue
+                
+                # Пропускаем если есть активная игра или приём заявок
+                if minesweeper_data[chat_id].get("active_game") or minesweeper_data[chat_id].get("accepting"):
+                    continue
+                
+                # Проверяем время следующего события
+                next_time = minesweeper_data[chat_id].get("next_event_time", 0)
+                if current_time >= next_time:
+                    logger.info(f"[MINESWEEPER] Автозапуск события в чате {chat_id}")
+                    minesweeper_data[chat_id]["excluded_players"] = []
+                    start_minesweeper_event(chat_id)
+                    
+        except Exception as e:
+            logger.error(f"[MINESWEEPER] Ошибка в фоновом процессе: {e}")
         
+        time.sleep(300)  # Проверяем каждые 5 минут
+
 # 🔄 Фоновый таймер для кражи монет (запускается каждую минуту)
 def background_timer_loop():
     while True:
@@ -2950,6 +3439,7 @@ def auto_save():
         save_paused_timers()
         save_execut_queue()
         save_daily_reports()
+        save_minesweeper_data()
 # 🚀 Запуск бота
 if __name__ == '__main__':
     logger.info("=== ЗАПУСК БОТА СОМКА ===")
@@ -2971,6 +3461,7 @@ if __name__ == '__main__':
     load_paused_timers()
     load_execut_queue()
     load_daily_reports()
+    load_minesweeper_data()
     try:
         bot.set_my_commands([
             telebot.types.BotCommand("members", "👥 Участники чата"),
@@ -2986,6 +3477,7 @@ if __name__ == '__main__':
             telebot.types.BotCommand("knb", "🎲 Камень-Ножницы-Бумага"),
             telebot.types.BotCommand("kidnapstat", "📊 Статистика похищений"),
             telebot.types.BotCommand("knbstat", "🎲 Статистика КНБ"),
+            telebot.types.BotCommand("minestat", "💣 Статистика Сапёра"),
             telebot.types.BotCommand("casinostat", "🏆 Топ казино"),
             telebot.types.BotCommand("triggersettings", "⚙️ Настройки"),
             telebot.types.BotCommand("who_somka", "❓ Напиши сомка кто (текст)"),
@@ -3002,6 +3494,7 @@ if __name__ == '__main__':
     threading.Thread(target=auto_save, daemon=True).start()
     threading.Thread(target=execut_kick_loop, daemon=True).start()
     threading.Thread(target=daily_report_loop, daemon=True).start()
+    threading.Thread(target=minesweeper_event_loop, daemon=True).start()
     while True:
         try:
             logger.info("Запуск polling...")
