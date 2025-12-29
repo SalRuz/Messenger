@@ -1043,9 +1043,10 @@ def execut_kick_loop():
     not m.text.startswith('/') and
     not (m.chat.id in chat_triggers and m.text.strip().lower() in chat_triggers[m.chat.id]) and
     not m.text.lower().startswith("members") and
-    not m.text.lower().startswith("сомка кто ")))
-def delete_muted_text_messages(message):
-    chat_id = message.chat.id
+    not m.text.lower().startswith("сомка кто ") and
+    not m.text.lower().startswith("сомка фото ") and
+    not m.text.lower().startswith("сомка нарисуй ")))
+def delete_muted_text_messages(message):    chat_id = message.chat.id
     user_id = message.from_user.id
     if chat_id in muted_users and user_id in muted_users[chat_id]:
         try:
