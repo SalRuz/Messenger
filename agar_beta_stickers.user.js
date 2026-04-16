@@ -1,198 +1,228 @@
 // ==UserScript==
-// @name         Agar.su Beta - Reaction Stickers
+// @name         Agar.su Beta Stickers Fix
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Добавляет механику стикеров реакций на шаре игрока через нажатие на цифры 1-9 (как на agar.su)
+// @version      1.2
+// @description  Исправленная система стикеров для agar.su/beta (цифры 1-9)
 // @author       You
 // @match        https://agar.su/beta*
-// @match        https://agar.su/beta/*
+// @match        https://agar.su/*
 // @grant        none
-// @run-at       document-end
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Ждём пока CORE инициализируется
-    function waitForCore(callback) {
-        const check = setInterval(() => {
-            if (window.CORE && window.CORE.net && window.CORE.app) {
-                clearInterval(check);
-                callback();
-            }
-        }, 100);
-    }
+    const BASE_URL = 'https://agar.su/';
+    const STICKER_COUNT = 9;
+    
+    let renderer = null;
+    let stickerSprites = [];
+    let activeStickerIndex = -1;
+    let stickerContainer = null;
+    let lastPressTime = 0;
+    const COOLDOWN = 300;
 
-    // Состояние стикеров
-    let currentSticker = null;
-    let stickerCooldown = false;
-    let stickerCooldownTimer = null;
+    console.log('[Stickers Beta] Инициализация...');
 
-    // Функция отправки стикера на сервер
-    function sendSticker(stickerId, action) {
-        if (window.CORE && window.CORE.net && window.CORE.net.ws && window.CORE.net.ws.readyState === WebSocket.OPEN) {
-            const msg = new DataView(new ArrayBuffer(3));
-            msg.setUint8(0, 200);      // opcode для стикеров (как на agar.su)
-            msg.setUint8(1, stickerId); // ID стикера (1-9)
-            msg.setUint8(2, action ? 1 : 0); // 1 = показать, 0 = скрыть
-            window.CORE.net.ws.send(msg.buffer);
+    function findGameObjects() {
+        if (window.app && window.app.stage) {
+            renderer = window.app;
+            return true;
         }
-    }
-
-    // Показать стикер над клеткой
-    function showStickerOverCell(stickerId) {
-        if (!window.CORE || !window.CORE.app) return;
-
-        const ownedCells = window.CORE.app.ownedCells;
-        if (!ownedCells || ownedCells.length === 0) return;
-
-        // Применяем стикер ко всем клеткам игрока
-        for (let i = 0; i < ownedCells.length; i++) {
-            const cell = window.CORE.app.cellsByID.get(ownedCells[i]);
-            if (cell && cell.sprite) {
-                cell.currentSticker = stickerId;
-                cell.stickerActive = true;
-
-                // Если есть спрайт стикера - показываем
-                if (cell.stickerSprite) {
-                    cell.stickerSprite.visible = true;
-                } else {
-                    // Создаём спрайт стикера если нет
-                    createStickerSprite(cell, stickerId);
+        
+        const names = ['game', 'app', 'main', 'view', 'renderer'];
+        for (let name of names) {
+            if (window[name]) {
+                if (window[name].stage) {
+                    renderer = window[name];
+                    return true;
+                }
+                if (window[name].renderer && window[name].stage) {
+                    renderer = window[name];
+                    return true;
                 }
             }
         }
+        return false;
     }
 
-    // Создать спрайт стикера
-    function createStickerSprite(cell, stickerId) {
-        if (!PIXI || !cell || !cell.sprite) return;
-
-        // URL для стикеров (можно заменить на свои)
-        const stickerUrls = {
-            1: 'https://api.agar.su/stickers/1.png',
-            2: 'https://api.agar.su/stickers/2.png',
-            3: 'https://api.agar.su/stickers/3.png',
-            4: 'https://api.agar.su/stickers/4.png',
-            5: 'https://api.agar.su/stickers/5.png',
-            6: 'https://api.agar.su/stickers/6.png',
-            7: 'https://api.agar.su/stickers/7.png',
-            8: 'https://api.agar.su/stickers/8.png',
-            9: 'https://api.agar.su/stickers/9.png'
-        };
-
-        try {
-            const texture = PIXI.Texture.from(stickerUrls[stickerId] || stickerUrls[1]);
-            const stickerSprite = new PIXI.Sprite(texture);
-            stickerSprite.anchor.set(0.5);
-            stickerSprite.scale.set(0.5); // Размер стикера
-            stickerSprite.zIndex = 100; // Поверх всего
-            stickerSprite.visible = true;
-
-            cell.sprite.addChild(stickerSprite);
-            cell.stickerSprite = stickerSprite;
-        } catch (e) {
-            console.warn('Не удалось создать спрайт стикера:', e);
+    function initStickers() {
+        if (!window.PIXI) {
+            setTimeout(initStickers, 200);
+            return;
         }
-    }
+        
+        if (!findGameObjects()) {
+            setTimeout(initStickers, 500);
+            return;
+        }
 
-    // Скрыть стикер
-    function hideSticker() {
-        if (!window.CORE || !window.CORE.app) return;
+        console.log('[Stickers Beta] Объект найден:', renderer);
 
-        const ownedCells = window.CORE.app.ownedCells;
-        if (!ownedCells || ownedCells.length === 0) return;
+        if (!stickerContainer) {
+            stickerContainer = new PIXI.Container();
+            stickerContainer.zIndex = 9999;
+            renderer.stage.addChild(stickerContainer);
+            renderer.stage.sortableChildren = true;
+        }
 
-        for (let i = 0; i < ownedCells.length; i++) {
-            const cell = window.CORE.app.cellsByID.get(ownedCells[i]);
-            if (cell) {
-                cell.currentSticker = null;
-                cell.stickerActive = false;
+        // Загрузка текстур с несколькими попытками путей
+        for (let i = 1; i <= STICKER_COUNT; i++) {
+            // Пробуем разные пути
+            const paths = [
+                `${BASE_URL}${i}.png`,
+                `${BASE_URL}img/${i}.png`,
+                `${BASE_URL}stickers/${i}.png`,
+                `https://agar.su/img/stickers/${i}.png`
+            ];
+            
+            let loaded = false;
+            for (let url of paths) {
+                if (loaded) break;
+                
+                try {
+                    const base = new PIXI.BaseTexture.from(url, {
+                        scaleMode: PIXI.SCALE_MODES.NEAREST,
+                        resourceOptions: { crossOrigin: 'anonymous' }
+                    });
+                    
+                    base.once('loaded', () => {
+                        loaded = true;
+                        console.log(`[Stickers Beta] Загружен стикер ${i}: ${url}`);
+                    });
+                    
+                    base.once('error', () => {
+                        // Тихая ошибка, пробуем следующий URL
+                    });
 
-                if (cell.stickerSprite) {
-                    cell.stickerSprite.visible = false;
+                    const tex = new PIXI.Texture(base);
+                    const sprite = new PIXI.Sprite(tex);
+                    sprite.anchor.set(0.5);
+                    sprite.visible = false;
+                    sprite.scale.set(0.5);
+                    stickerContainer.addChild(sprite);
+                    stickerSprites[i] = sprite;
+                    break;
+                } catch(e) {
+                    continue;
                 }
             }
         }
+
+        setupInput();
+        console.log('[Stickers Beta] Готово! Жмите 1-9');
     }
 
-    // Обработчик нажатия клавиш
-    function handleKeyDown(event) {
-        if (!window.CORE || !window.CORE.net) return;
-
-        // Проверяем что игра активна и игрок не печатает в чате
-        const isTyping = document.activeElement.tagName === 'INPUT' ||
-                        document.activeElement.id === 'chat-field';
-
-        if (isTyping) return;
-
-        const keyCode = event.keyCode;
-
-        // Цифры 1-9 (коды 49-57)
-        if (keyCode >= 49 && keyCode <= 57) {
-            const stickerId = keyCode - 48; // Преобразуем в номер 1-9
-
-            if (!stickerCooldown && currentSticker !== stickerId) {
-                // Если уже есть активный стикер - скрываем его
-                if (currentSticker !== null) {
-                    sendSticker(currentSticker, false);
-                    hideSticker();
-                }
-
-                // Показываем новый стикер
-                currentSticker = stickerId;
-                sendSticker(stickerId, true);
-                showStickerOverCell(stickerId);
-
-                // Активируем задержку (cooldown) чтобы избежать спама
-                stickerCooldown = true;
-                if (stickerCooldownTimer) clearTimeout(stickerCooldownTimer);
-                stickerCooldownTimer = setTimeout(() => {
-                    stickerCooldown = false;
-                }, 300); // 300мс задержка
-            }
-        }
-    }
-
-    // Обработчик отпускания клавиш
-    function handleKeyUp(event) {
-        if (!window.CORE || !window.CORE.net) return;
-
-        const keyCode = event.keyCode;
-
-        // Цифры 1-9 (коды 49-57)
-        if (keyCode >= 49 && keyCode <= 57) {
-            const stickerId = keyCode - 48;
-
-            if (currentSticker === stickerId) {
-                currentSticker = null;
-                sendSticker(stickerId, false);
-                hideSticker();
-            }
-        }
-    }
-
-    // Основная функция инициализации
-    function init() {
-        console.log('[Stickers] Инициализация системы стикеров...');
-
-        // Добавляем слушатели событий
-        document.addEventListener('keydown', handleKeyDown);
-        document.addEventListener('keyup', handleKeyUp);
-
-        // Также слушаем blur окна чтобы сбрасывать стикеры
-        window.addEventListener('blur', () => {
-            if (currentSticker !== null) {
-                sendSticker(currentSticker, false);
-                hideSticker();
-                currentSticker = null;
+    function setupInput() {
+        document.addEventListener('keydown', (e) => {
+            if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+            
+            if (/^[1-9]$/.test(e.key)) {
+                showSticker(parseInt(e.key));
             }
         });
 
-        console.log('[Stickers] Система стикеров активирована! Используйте цифры 1-9 для показа стикеров.');
+        document.addEventListener('keyup', (e) => {
+            if (/^[1-9]$/.test(e.key)) hideSticker();
+        });
+        
+        window.addEventListener('blur', hideSticker);
     }
 
-    // Запускаем после инициализации CORE
-    waitForCore(init);
+    function showSticker(index) {
+        const now = Date.now();
+        if (now - lastPressTime < COOLDOWN) return;
+        lastPressTime = now;
 
+        if (!stickerSprites[index]) return;
+
+        // Отправка на сервер
+        try {
+            const ws = window.ws || window.socket;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const packet = new Uint8Array(2);
+                packet[0] = 200;
+                packet[1] = index;
+                ws.send(packet);
+            }
+        } catch(e) {}
+
+        // Поиск клетки игрока
+        let myCell = null;
+        const arrays = ['cells', 'myCells', 'nodes', 'balls', 'allCells'];
+        
+        for (let name of arrays) {
+            if (window[name] && Array.isArray(window[name]) && window[name].length > 0) {
+                // Ищем самую большую
+                let largest = null;
+                let max = 0;
+                for (let c of window[name]) {
+                    const s = c.size || c.radius || 0;
+                    if (s > max) { max = s; largest = c; }
+                }
+                if (largest) { myCell = largest; break; }
+            }
+        }
+
+        const sprite = stickerSprites[index];
+        sprite.visible = true;
+        
+        if (myCell && myCell.x !== undefined) {
+            const zoom = window.viewZoom || window.cameraZoom || 1;
+            const camX = window.viewX || window.cameraX || 0;
+            const camY = window.viewY || window.cameraY || 0;
+            
+            sprite.x = (myCell.x - camX) * zoom + window.innerWidth / 2;
+            sprite.y = (myCell.y - camY) * zoom + window.innerHeight / 2;
+            
+            const size = myCell.size || myCell.radius * 2 || 100;
+            sprite.scale.set(Math.max(0.3, Math.min(1.5, size / 200)));
+        } else {
+            sprite.x = window.innerWidth / 2;
+            sprite.y = window.innerHeight / 2;
+            sprite.scale.set(1);
+        }
+        
+        activeStickerIndex = index;
+    }
+
+    function hideSticker() {
+        if (activeStickerIndex !== -1 && stickerSprites[activeStickerIndex]) {
+            stickerSprites[activeStickerIndex].visible = false;
+            activeStickerIndex = -1;
+        }
+    }
+
+    // Автообновление позиции
+    function loop() {
+        if (activeStickerIndex !== -1 && stickerSprites[activeStickerIndex]) {
+            let myCell = null;
+            const arrays = ['cells', 'myCells', 'nodes'];
+            for (let name of arrays) {
+                if (window[name] && window[name].length > 0) {
+                    myCell = window[name][0];
+                    break;
+                }
+            }
+            
+            if (myCell && myCell.x !== undefined) {
+                const zoom = window.viewZoom || 1;
+                const camX = window.viewX || 0;
+                const camY = window.viewY || 0;
+                
+                stickerSprites[activeStickerIndex].x = (myCell.x - camX) * zoom + window.innerWidth / 2;
+                stickerSprites[activeStickerIndex].y = (myCell.y - camY) * zoom + window.innerHeight / 2;
+            }
+        }
+        requestAnimationFrame(loop);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initStickers);
+    } else {
+        initStickers();
+    }
+    
+    loop();
 })();
